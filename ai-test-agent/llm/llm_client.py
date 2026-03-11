@@ -43,6 +43,7 @@ class LLMClient:
             timeout=self._config.llm_timeout_seconds,
         )
         if response.status_code >= 400:
+            LOGGER.error("LLM URL:%s",self.api_url)
             LOGGER.error("llm_request_failed status=%s body=%s", response.status_code, response.text[:1000])
             raise RuntimeError(f"LLM request failed with status {response.status_code}")
         body = response.json()
