@@ -1,0 +1,35 @@
+name: AI Test Agent
+description: Generate AI-authored unit tests for pull request changes.
+
+inputs:
+  llm_api_url:
+    description: OpenAI-compatible chat completions endpoint.
+    required: true
+  llm_api_key:
+    description: API key for the configured LLM endpoint.
+    required: true
+  llm_model:
+    description: Model identifier used for generation.
+    required: true
+  comment_on_pr:
+    description: Post a pull request comment with the generation summary.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: python -m pip install --upgrade pip && python -m pip install -r "${{ github.action_path }}/requirements.txt"
+    - name: Run AI test agent
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        AI_TEST_AGENT_REPO_ROOT: ${{ github.workspace }}
+        AI_TEST_AGENT_COMMENT_ON_PR: ${{ inputs.comment_on_pr }}
+        LLM_API_URL: ${{ inputs.llm_api_url }}
+        LLM_API_KEY: ${{ inputs.llm_api_key }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: python -m agent.main
