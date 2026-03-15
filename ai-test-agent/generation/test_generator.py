@@ -13,7 +13,9 @@ from utils.logger import get_logger
 LOGGER = get_logger(__name__)
 
 MAX_GENERATION_ATTEMPTS = 3
-BATCH_SIZE = 5
+
+# delay between LLM calls to avoid rate limits
+LLM_CALL_DELAY_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -33,37 +35,38 @@ def generate_tests(generation_context: GenerationContext, config: AgentConfig) -
 
     for target in generation_context.targets:
 
-        functions = target.changed_functions
+        for changed_function in target.changed_functions:
 
-        # batch functions
-        for i in range(0, len(functions), BATCH_SIZE):
-
-            batch = functions[i:i + BATCH_SIZE]
-
-            batch_target = GenerationTarget(
+            # create a temporary target containing only one function
+            single_function_target = GenerationTarget(
                 source_file=target.source_file,
                 language=target.language,
                 framework=target.framework,
                 imports=target.imports,
                 helper_functions=target.helper_functions,
                 existing_tests=target.existing_tests,
-                changed_functions=batch,
+                changed_functions=[changed_function],
             )
 
-            prompt = build_prompt(batch_target)
+            prompt = build_prompt(single_function_target)
 
             content = None
 
             for attempt in range(MAX_GENERATION_ATTEMPTS):
 
                 LOGGER.info(
-                    "test_generation_batch source=%s functions=%s attempt=%s",
+                    "test_generation_function source=%s function=%s attempt=%s",
                     target.source_file,
-                    [f.function_name for f in batch],
+                    changed_function.function_name,
                     attempt + 1,
                 )
 
-                response = client.generate(prompt)
+                try:
+                    response = client.generate(prompt)
+                except Exception as e:
+                    LOGGER.warning("llm_generation_failed error=%s", str(e))
+                    time.sleep(LLM_CALL_DELAY_SECONDS)
+                    continue
 
                 LOGGER.info("LLM_RAW_OUTPUT_START")
                 LOGGER.info(response.content)
@@ -77,10 +80,13 @@ def generate_tests(generation_context: GenerationContext, config: AgentConfig) -
 
                 LOGGER.warning("empty_llm_output_retry")
 
+                time.sleep(LLM_CALL_DELAY_SECONDS)
+
             if not content:
                 LOGGER.error(
-                    "generation_failed_after_retries source=%s",
+                    "generation_failed_after_retries source=%s function=%s",
                     target.source_file,
+                    changed_function.function_name,
                 )
                 continue
 
@@ -88,12 +94,13 @@ def generate_tests(generation_context: GenerationContext, config: AgentConfig) -
                 GeneratedTest(
                     source_file=target.source_file,
                     language=target.language,
-                    function_names=[f.function_name for f in batch],
+                    function_names=[changed_function.function_name],
                     content=content.strip() + "\n",
                 )
             )
 
-            time.sleep(1)
+            # delay between calls to avoid API rate limits
+            time.sleep(LLM_CALL_DELAY_SECONDS)
 
     return generated_tests
 
