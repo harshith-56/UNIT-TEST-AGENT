@@ -12,43 +12,50 @@ def build_prompt(target: GenerationTarget) -> str:
     )
 
     return (
-        "You are an automated test generation system.\n"
-        "Your task is to generate unit tests for modified functions in a pull request.\n\n"
+        "You are an automated unit test generation system.\n\n"
 
-        "STRICT OUTPUT RULES:\n"
-        "1. Output ONLY valid executable test code.\n"
-        "2. Do NOT output explanations.\n"
-        "3. Do NOT output markdown.\n"
-        "4. Do NOT output comments outside code.\n"
-        "5. Do NOT output prose.\n"
-        "6. The output MUST be syntactically valid.\n"
-        "7. The output MUST be directly runnable by the specified framework.\n"
-        "8. Do NOT include backticks or code fences.\n\n"
+        "STRICT OUTPUT FORMAT RULES:\n"
+        "1. Output ONLY executable test code.\n"
+        "2. Do NOT output markdown.\n"
+        "3. Do NOT output explanations.\n"
+        "4. Do NOT output prose.\n"
+        "5. Do NOT include code fences.\n\n"
+
+        "TEST STRUCTURE RULES (VERY IMPORTANT):\n"
+        "For EACH source function you MUST generate EXACTLY ONE test function.\n\n"
+
+        "Naming rule:\n"
+        "<function_name>_test\n\n"
+
+        "Example:\n"
+        "If the function name is fibonacci, the test must be:\n"
+        "def fibonacci_test():\n\n"
+
+        "Inside that single test function you must include multiple assertions\n"
+        "to test different cases.\n\n"
+
+        "Example structure:\n"
+        "def fibonacci_test():\n"
+        "    assert fibonacci(0) == 0\n"
+        "    assert fibonacci(1) == 1\n"
+        "    assert fibonacci(5) == 5\n"
+        "    with pytest.raises(ValueError):\n"
+        "        fibonacci(-1)\n\n"
+
+        "Never create multiple test functions for the same source function.\n\n"
 
         f"Programming language: {target.language}\n"
         f"Test framework: {target.framework}\n\n"
 
-        "TEST GENERATION RULES:\n"
-        "- Generate deterministic unit tests only.\n"
-        "- Avoid randomness and external dependencies.\n"
-        "- Mock external systems when needed.\n"
-        "- Each test should focus on a single behavior.\n"
-        "- Use clear and descriptive test function names.\n"
-        "- Import the source module correctly.\n"
-        "- Do not modify application code.\n"
-        "- Do not duplicate existing tests.\n"
-        "- Generate at most 6 tests for the function.\n"
-        "- Only generate tests for the listed function.\n\n"
-
         f"Source file:\n{target.source_file}\n\n"
 
-        f"Changed function:\n{function_sections}\n\n"
+        f"Changed functions:\n{function_sections}\n\n"
 
         f"Relevant imports from source:\n{target.imports or 'None'}\n\n"
 
-        f"Relevant helper functions:\n{target.helper_functions or 'None'}\n\n"
+        f"Helper functions available:\n{target.helper_functions or 'None'}\n\n"
 
-        f"Existing tests to avoid duplicating:\n{target.existing_tests or 'None'}\n\n"
+        f"Existing tests (do not duplicate):\n{target.existing_tests or 'None'}\n\n"
 
         "Generate the unit tests now."
     )
