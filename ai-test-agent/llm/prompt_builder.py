@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from context.repo_context import GenerationTarget
 
+
 def build_prompt(target: GenerationTarget) -> str:
     function_sections = "\n\n".join(
         f"Function: {changed_function.function_name}\n"
@@ -31,24 +32,25 @@ def build_prompt(target: GenerationTarget) -> str:
         "- Generate deterministic unit tests only.\n"
         "- Avoid randomness and external dependencies.\n"
         "- Mock external systems when needed.\n"
-        "- Do not test unrelated functionality.\n"
         "- Each test should focus on a single behavior.\n"
         "- Use clear and descriptive test function names.\n"
         "- Import the source module correctly.\n"
         "- Do not modify application code.\n"
-        "- Do not duplicate existing tests.\n\n"
+        "- Do not duplicate existing tests.\n"
+        "- Generate at most 6 tests for the function.\n"
+        "- Only generate tests for the listed function.\n\n"
 
         f"Source file:\n{target.source_file}\n\n"
 
-        f"Changed functions:\n{function_sections}\n\n"
+        f"Changed function:\n{function_sections}\n\n"
 
         f"Relevant imports from source:\n{target.imports or 'None'}\n\n"
 
-        f"Helper functions available:\n{target.helper_functions or 'None'}\n\n"
+        f"Relevant helper functions:\n{target.helper_functions or 'None'}\n\n"
 
-        f"Existing tests (do not duplicate):\n{target.existing_tests or 'None'}\n\n"
+        f"Existing tests to avoid duplicating:\n{target.existing_tests or 'None'}\n\n"
 
-        "Generate unit tests now."
+        "Generate the unit tests now."
     )
 
 
