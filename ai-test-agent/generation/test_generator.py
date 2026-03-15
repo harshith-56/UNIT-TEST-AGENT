@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 from agent.config import AgentConfig
 from context.repo_context import GenerationContext, GenerationTarget
@@ -12,6 +13,7 @@ from utils.logger import get_logger
 LOGGER = get_logger(__name__)
 
 MAX_GENERATION_ATTEMPTS = 3
+BATCH_SIZE = 5
 
 
 @dataclass(frozen=True)
@@ -31,29 +33,33 @@ def generate_tests(generation_context: GenerationContext, config: AgentConfig) -
 
     for target in generation_context.targets:
 
-        # IMPORTANT: generate tests per changed function
-        for changed_function in target.changed_functions:
+        functions = target.changed_functions
 
-            single_function_target = GenerationTarget(
+        # batch functions
+        for i in range(0, len(functions), BATCH_SIZE):
+
+            batch = functions[i:i + BATCH_SIZE]
+
+            batch_target = GenerationTarget(
                 source_file=target.source_file,
                 language=target.language,
                 framework=target.framework,
                 imports=target.imports,
                 helper_functions=target.helper_functions,
                 existing_tests=target.existing_tests,
-                changed_functions=[changed_function],
+                changed_functions=batch,
             )
 
-            prompt = build_prompt(single_function_target)
+            prompt = build_prompt(batch_target)
 
             content = None
 
             for attempt in range(MAX_GENERATION_ATTEMPTS):
 
                 LOGGER.info(
-                    "test_generation_attempt source=%s function=%s attempt=%s",
+                    "test_generation_batch source=%s functions=%s attempt=%s",
                     target.source_file,
-                    changed_function.function_name,
+                    [f.function_name for f in batch],
                     attempt + 1,
                 )
 
@@ -73,9 +79,8 @@ def generate_tests(generation_context: GenerationContext, config: AgentConfig) -
 
             if not content:
                 LOGGER.error(
-                    "generation_failed_after_retries source=%s function=%s",
+                    "generation_failed_after_retries source=%s",
                     target.source_file,
-                    changed_function.function_name,
                 )
                 continue
 
@@ -83,10 +88,12 @@ def generate_tests(generation_context: GenerationContext, config: AgentConfig) -
                 GeneratedTest(
                     source_file=target.source_file,
                     language=target.language,
-                    function_names=[changed_function.function_name],
+                    function_names=[f.function_name for f in batch],
                     content=content.strip() + "\n",
                 )
             )
+
+            time.sleep(1)
 
     return generated_tests
 
