@@ -25,6 +25,7 @@ class LLMClient:
 
     def generate(self, prompt: str) -> LLMResponse:
         trimmed_prompt = prompt[: self._config.llm_max_prompt_chars]
+
         payload = {
             "model": self._config.llm_model,
             "temperature": 0,
@@ -33,6 +34,7 @@ class LLMClient:
                 {"role": "user", "content": trimmed_prompt},
             ],
         }
+
         response = requests.post(
             self._config.llm_api_url,
             headers={
@@ -42,24 +44,41 @@ class LLMClient:
             json=payload,
             timeout=self._config.llm_timeout_seconds,
         )
+
         if response.status_code >= 400:
-            LOGGER.error("LLM URL:%s",self.api_url)
-            LOGGER.error("llm_request_failed status=%s body=%s", response.status_code, response.text[:1000])
+            LOGGER.error("LLM URL: %s", self._config.llm_api_url)
+            LOGGER.error(
+                "llm_request_failed status=%s body=%s",
+                response.status_code,
+                response.text[:1000],
+            )
             raise RuntimeError(f"LLM request failed with status {response.status_code}")
+
         body = response.json()
         content = _extract_content(body)
+
         if not content.strip():
             raise RuntimeError("LLM returned empty content")
+
         return LLMResponse(content=content, model=self._config.llm_model)
 
 
 def _extract_content(body: dict) -> str:
     choices = body.get("choices") or []
+
     if not choices:
         return body.get("output_text", "")
+
     message = choices[0].get("message", {})
+
     if isinstance(message.get("content"), str):
         return message["content"]
+
     if isinstance(message.get("content"), list):
-        return "".join(part.get("text", "") for part in message["content"] if isinstance(part, dict))
+        return "".join(
+            part.get("text", "")
+            for part in message["content"]
+            if isinstance(part, dict)
+        )
+
     return choices[0].get("text", "")
