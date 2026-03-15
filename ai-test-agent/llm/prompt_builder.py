@@ -25,17 +25,17 @@ def build_prompt(target: GenerationTarget) -> str:
         "For EACH source function you MUST generate EXACTLY ONE test function.\n\n"
 
         "Naming rule:\n"
-        "<function_name>_test\n\n"
+        "test_<function_name>\n\n"
 
         "Example:\n"
         "If the function name is fibonacci, the test must be:\n"
-        "def fibonacci_test():\n\n"
+        "def test_fibonacci():\n\n"
 
         "Inside that single test function you must include multiple assertions\n"
         "to test different cases.\n\n"
 
         "Example structure:\n"
-        "def fibonacci_test():\n"
+        "def test_fibonacci():\n"
         "    assert fibonacci(0) == 0\n"
         "    assert fibonacci(1) == 1\n"
         "    assert fibonacci(5) == 5\n"

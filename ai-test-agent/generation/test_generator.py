@@ -12,10 +12,10 @@ from utils.logger import get_logger
 
 LOGGER = get_logger(__name__)
 
-MAX_GENERATION_ATTEMPTS = 3
+MAX_GENERATION_ATTEMPTS = 5
 
 # delay between LLM calls to avoid rate limits
-LLM_CALL_DELAY_SECONDS = 2
+LLM_CALL_DELAY_SECONDS = 5
 
 
 @dataclass(frozen=True)
