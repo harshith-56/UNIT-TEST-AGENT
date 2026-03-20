@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 
 from context.dependency_resolver import DependencyContext, extract_dependencies
 from context.project_context import StructuredContext
@@ -9,6 +10,10 @@ from diff.diff_analyzer import should_generate_tests
 from diff.diff_models import CHANGE_TYPE_DELETION, CHANGE_TYPE_RENAME, ChangedFile, FunctionChange
 from test_discovery.test_scanner import find_related_tests
 from validation.test_naming import build_test_prefix, extract_test_names, sanitize_test_identifier
+
+
+MAX_EXISTING_TEST_BLOCKS = 4
+MAX_EXISTING_TEST_CHARS = 4000
 
 
 @dataclass(frozen=True)
@@ -120,15 +125,48 @@ def _collect_existing_tests(
         build_test_prefix(function_change.previous_name or function_change.function_name),
     }
     snippets: list[str] = []
+    snippet_chars = 0
     test_names: list[str] = []
+
     for path in test_paths:
         source = path.read_text(encoding="utf-8")
         names = extract_test_names(language, source)
         relevant_names = [name for name in names if any(name.startswith(prefix) for prefix in target_prefixes)]
         if not relevant_names:
             continue
+
         test_names.extend(relevant_names)
-        snippets.append(source[:4000])
-        if sum(len(snippet) for snippet in snippets) >= 6000:
+        for block in _extract_named_test_blocks(language, source, relevant_names):
+            block = block.strip()
+            if not block:
+                continue
+            projected_chars = snippet_chars + len(block)
+            if snippets and projected_chars > MAX_EXISTING_TEST_CHARS:
+                break
+            snippets.append(block)
+            snippet_chars = projected_chars
+            if len(snippets) >= MAX_EXISTING_TEST_BLOCKS:
+                break
+        if len(snippets) >= MAX_EXISTING_TEST_BLOCKS or snippet_chars >= MAX_EXISTING_TEST_CHARS:
             break
+
     return "\n\n".join(snippets), sorted(dict.fromkeys(test_names))
+
+
+def _extract_named_test_blocks(language: str, source: str, test_names: list[str]) -> list[str]:
+    blocks: list[str] = []
+    for name in test_names:
+        pattern = re.compile(_test_pattern(language, re.escape(name)), flags=re.MULTILINE | re.DOTALL)
+        match = pattern.search(source)
+        if match is None:
+            continue
+        block = match.group(0).strip()
+        if block and block not in blocks:
+            blocks.append(block)
+    return blocks
+
+
+def _test_pattern(language: str, name_pattern: str) -> str:
+    if language == "python":
+        return rf"^def\s+{name_pattern}\(.*?(?=^def\s+test_|\Z)"
+    return rf"^\s*(?:it|test)\(\s*['\"`]{name_pattern}['\"`].*?(?=^\s*(?:it|test)\(\s*['\"`]test_|\Z)"

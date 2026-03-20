@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ast
-import builtins
 import difflib
+import json
 import re
 from collections import defaultdict
 from pathlib import Path
+
+import esprima
+from tree_sitter_languages import get_parser
 
 from agent.config import detect_language
 from diff.diff_models import (
@@ -39,54 +42,32 @@ _CONFIG_FILE_PATTERNS = [
         r"(^|/)(?:jest|webpack|vite|rollup|babel|eslint|prettier|tsup|vitest|tailwind|postcss|next|nuxt)\.config\.(?:js|ts|mjs|cjs)$",
     )
 ]
+_CONFIG_NAME_KEYWORDS = ("config", "settings", "constants", "env", "setup", "build")
+_TRIVIAL_CALL_WHITELIST = {
+    "bool",
+    "dict",
+    "float",
+    "frozenset",
+    "int",
+    "len",
+    "list",
+    "set",
+    "sorted",
+    "str",
+    "tuple",
+    "Object",
+    "Array",
+    "String",
+    "Number",
+    "Boolean",
+}
+_COMPLEX_LINE_PATTERN = re.compile(r"\b(await|yield|raise|throw|try|except|catch|switch|case)\b|&&|\|\||\?")
+_SIMPLE_STATEMENT_PATTERN = re.compile(
+    r"^(?:return\b.*|pass$|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=.*|[A-Za-z_$][\w$\.\[\]]*\s*=.*|[{}]$)$"
+)
 _JS_LINE_COMMENT_PATTERN = re.compile(r"//.*?(?=\r?$)", re.MULTILINE)
 _JS_BLOCK_COMMENT_PATTERN = re.compile(r"/\*.*?\*/", re.DOTALL)
 _JS_STRING_PATTERN = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`", re.DOTALL)
-_JS_TOKEN_PATTERN = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==={0,1}|!==|!=|<=|>=|=>|&&|\|\||\.\.\.|[{}()\[\].,:;+\-*/%<>!=?]"
-)
-_JS_KEYWORDS = {
-    "async",
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "default",
-    "delete",
-    "do",
-    "else",
-    "export",
-    "extends",
-    "false",
-    "finally",
-    "for",
-    "function",
-    "if",
-    "import",
-    "in",
-    "instanceof",
-    "let",
-    "new",
-    "null",
-    "return",
-    "super",
-    "switch",
-    "this",
-    "throw",
-    "true",
-    "try",
-    "typeof",
-    "undefined",
-    "var",
-    "void",
-    "while",
-    "yield",
-}
-_PYTHON_BUILTINS = set(dir(builtins))
-
 
 def analyze_diff(repo_root: Path, base_branch: str) -> list[ChangedFile]:
     diff_text = get_diff(repo_root, base_branch)
@@ -106,7 +87,10 @@ def analyze_diff(repo_root: Path, base_branch: str) -> list[ChangedFile]:
 
         current_functions = _parse_functions(language, current_path, current_source) if current_source else []
         previous_functions = _parse_functions(language, current_path, previous_source) if previous_source else []
-        if not current_functions and not previous_functions:
+        candidate_functions = current_functions or previous_functions
+        if not candidate_functions:
+            continue
+        if is_config_like_file(file_path, candidate_functions):
             continue
 
         function_changes = _classify_function_changes(
@@ -147,6 +131,13 @@ def has_behavioral_change(language: str, current_function: ParsedFunction, previ
     current_normalized = _normalize_function_source(language, current_function)
     previous_normalized = _normalize_function_source(language, previous_function)
     return current_normalized != previous_normalized
+
+
+def is_config_like_file(file_path: str, functions: list[ParsedFunction]) -> bool:
+    normalized_name = Path(file_path).stem.lower()
+    if any(keyword in normalized_name for keyword in _CONFIG_NAME_KEYWORDS):
+        return True
+    return bool(functions) and all(_function_is_trivial(function) for function in functions)
 
 
 def _split_diff_by_file(diff_text: str) -> dict[str, str]:
@@ -316,15 +307,43 @@ def _build_function_change(
 
 
 def _should_skip_generation(function: ParsedFunction) -> bool:
-    meaningful_lines = [line for line in function.source_code.splitlines() if line.strip() and not line.strip().startswith("@")]
+    meaningful_lines = [line for line in function.source_code.splitlines() if line.strip() and not line.strip().startswith("@")] 
     has_validation = function.has_validation or bool(_VALIDATION_HINT_PATTERN.search(function.source_code))
     return len(meaningful_lines) < 10 and function.branch_count == 0 and not has_validation
+
+
+def _function_is_trivial(function: ParsedFunction) -> bool:
+    if function.branch_count > 0 or function.has_validation:
+        return False
+    nontrivial_calls = [call for call in function.called_functions if call.split(".")[-1] not in _TRIVIAL_CALL_WHITELIST]
+    if nontrivial_calls:
+        return False
+    body_lines = _function_body_lines(function.source_code)
+    if not body_lines or len(body_lines) > 6:
+        return False
+    return all(_is_trivial_body_line(line) for line in body_lines)
+
+
+def _function_body_lines(source_code: str) -> list[str]:
+    meaningful = [line.strip().rstrip(";") for line in source_code.splitlines() if line.strip() and not line.strip().startswith("@")]
+    if not meaningful:
+        return []
+    body_lines = meaningful[1:]
+    return [line for line in body_lines if line not in {"{", "}"}]
+
+
+def _is_trivial_body_line(line: str) -> bool:
+    if _COMPLEX_LINE_PATTERN.search(line):
+        return False
+    return bool(_SIMPLE_STATEMENT_PATTERN.match(line))
 
 
 def _normalize_function_source(language: str, function: ParsedFunction) -> str:
     if language == "python":
         return _normalize_python_function(function.source_code)
-    return _normalize_js_like_function(function)
+    if language == "javascript":
+        return _normalize_javascript_function(function)
+    return _normalize_typescript_function(function)
 
 
 def _normalize_python_function(source_code: str) -> str:
@@ -344,6 +363,77 @@ def _normalize_python_function(source_code: str) -> str:
     canonical = _PythonCanonicalizer(local_names).visit(function_node)
     ast.fix_missing_locations(canonical)
     return ast.dump(canonical, annotate_fields=True, include_attributes=False)
+
+
+def _normalize_javascript_function(function: ParsedFunction) -> str:
+    for candidate in _candidate_js_like_sources(function):
+        try:
+            program = esprima.parseModule(candidate, {"jsx": True, "tolerant": True})
+        except Exception:
+            continue
+        return json.dumps(_serialize_js_ast(program), sort_keys=True, separators=(",", ":"))
+    return "".join(_strip_js_comments(function.source_code).split())
+
+
+def _normalize_typescript_function(function: ParsedFunction) -> str:
+    for candidate in _candidate_js_like_sources(function):
+        for parser_name in ("typescript", "tsx"):
+            parser = get_parser(parser_name)
+            candidate_bytes = candidate.encode("utf-8")
+            tree = parser.parse(candidate_bytes)
+            if tree.root_node.has_error:
+                continue
+            return json.dumps(_serialize_ts_ast(tree.root_node, candidate_bytes), sort_keys=True, separators=(",", ":"))
+    return "".join(_strip_js_comments(function.source_code).split())
+
+
+def _candidate_js_like_sources(function: ParsedFunction) -> list[str]:
+    stripped = function.source_code.strip()
+    candidates = [stripped]
+    if function.enclosing_class_name or re.match(r"^(?:async\s+)?[A-Za-z_$][\w$]*\s*\(", stripped):
+        candidates.insert(0, f"class Temp {{\n{stripped}\n}}")
+    if "=>" in stripped and not re.match(r"^(?:export\s+)?(?:const|let|var|async\s+function|function)\b", stripped):
+        candidates.append(f"const __wrapped = {stripped};")
+    unique_candidates: list[str] = []
+    for candidate in candidates:
+        if candidate not in unique_candidates:
+            unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def _serialize_js_ast(node):
+    if node is None:
+        return None
+    if isinstance(node, list):
+        return [_serialize_js_ast(item) for item in node]
+    if isinstance(node, (str, int, float, bool)):
+        return node
+    if hasattr(node, "type"):
+        payload = {"type": getattr(node, "type")}
+        for key, value in sorted(vars(node).items()):
+            if key in {"type", "loc", "range", "raw", "comments", "tokens"}:
+                continue
+            if value is None:
+                continue
+            payload[key] = _serialize_js_ast(value)
+        return payload
+    if isinstance(node, dict):
+        return {key: _serialize_js_ast(value) for key, value in sorted(node.items())}
+    return str(node)
+
+
+def _serialize_ts_ast(node, source_bytes: bytes):
+    children = [
+        _serialize_ts_ast(child, source_bytes)
+        for child in node.named_children
+        if child.type != "comment"
+    ]
+    if not children:
+        return {
+            "type": node.type,
+            "text": source_bytes[node.start_byte : node.end_byte].decode("utf-8"),
+        }
+    return {"type": node.type, "children": children}
 
 
 def _collect_python_local_names(function_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -435,84 +525,6 @@ def _strip_python_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
-def _normalize_js_like_function(function: ParsedFunction) -> str:
-    source = _strip_js_comments(function.source_code)
-    source = _canonicalize_js_header(source)
-    preserved_identifiers = set(function.called_functions)
-    local_identifiers = _collect_js_local_identifiers(source)
-    tokens = _JS_TOKEN_PATTERN.findall(source)
-    mapping: dict[str, str] = {}
-    normalized: list[str] = []
-    previous_token = ""
-    for token in tokens:
-        if _is_js_identifier(token):
-            if previous_token == "." or token in _JS_KEYWORDS or token in preserved_identifiers:
-                normalized.append(token)
-            elif token in local_identifiers:
-                normalized.append(mapping.setdefault(token, f"v{len(mapping) + 1}"))
-            else:
-                normalized.append(token)
-        else:
-            normalized.append(token)
-        previous_token = token
-    return "".join(normalized)
-
-
-def _canonicalize_js_header(source_code: str) -> str:
-    source_code = re.sub(
-        r"^(\s*(?:export\s+default\s+|export\s+)?(?:async\s+)?function)\s+[A-Za-z_][A-Za-z0-9_]*",
-        r"\1 function",
-        source_code,
-        count=1,
-    )
-    source_code = re.sub(
-        r"^(\s*(?:const|let|var))\s+[A-Za-z_][A-Za-z0-9_]*\s*=",
-        r"\1 function =",
-        source_code,
-        count=1,
-    )
-    source_code = re.sub(
-        r"^(\s*(?:async\s+)?)?[A-Za-z_][A-Za-z0-9_]*\s*\(",
-        lambda match: f"{match.group(1) or ''}function(",
-        source_code,
-        count=1,
-    )
-    return source_code
-
-
-def _collect_js_local_identifiers(source_code: str) -> set[str]:
-    identifiers: set[str] = set()
-    for pattern in (
-        re.compile(r"\b(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)"),
-        re.compile(r"\bcatch\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)"),
-    ):
-        identifiers.update(pattern.findall(source_code))
-
-    parameters = _extract_js_parameters(source_code)
-    identifiers.update(parameters)
-    identifiers.discard("function")
-    return identifiers
-
-
-def _extract_js_parameters(source_code: str) -> set[str]:
-    header = source_code.split("{", 1)[0]
-    match = re.search(r"\((?P<params>.*)\)", header, re.DOTALL)
-    if match is None:
-        return set()
-    params_text = match.group("params")
-    parameters: set[str] = set()
-    for raw_param in params_text.split(","):
-        param = raw_param.strip()
-        if not param or param.startswith("{") or param.startswith("["):
-            continue
-        param = param.lstrip("...")
-        param = param.split("=", 1)[0].strip()
-        param = param.split(":", 1)[0].strip()
-        if _is_js_identifier(param):
-            parameters.add(param)
-    return parameters
-
-
 def _strip_js_comments(source_code: str) -> str:
     protected_strings: list[str] = []
 
@@ -527,10 +539,6 @@ def _strip_js_comments(source_code: str) -> str:
     for index, value in enumerate(protected_strings):
         stripped = stripped.replace(f"__STRING_{index}__", value)
     return stripped
-
-
-def _is_js_identifier(token: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token))
 
 
 def _parse_functions(language: str, file_path: Path, source_text: str) -> list[ParsedFunction]:

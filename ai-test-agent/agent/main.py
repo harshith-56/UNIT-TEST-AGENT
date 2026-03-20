@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 from agent.config import detect_languages, load_config
 from context.event_context import load_event_context
@@ -15,6 +16,7 @@ from integration.test_mapping import mapping_key
 from integration.test_writer import WriteResult, write_generated_tests
 from reporting.pr_commenter import post_pr_comment
 from test_discovery.test_scanner import discover_existing_tests
+from utils.file_utils import sanitize_module_name
 from utils.logger import get_logger
 from validation.duplicate_detector import filter_duplicate_tests
 from validation.syntax_validator import validate_generated_tests
@@ -68,7 +70,12 @@ def main() -> int:
         return 1
 
     test_results = execute_tests(config.repo_root, detected_languages)
-    repair_targets = _build_repair_targets(generation_context.targets, write_result.test_mapping, test_results)
+    repair_targets = _build_repair_targets(
+        generation_context.targets,
+        write_result.test_mapping,
+        test_results,
+        write_result.written_paths,
+    )
 
     repaired_tests: list = []
     if repair_targets:
@@ -114,17 +121,23 @@ def _build_repair_targets(
     targets: list[GenerationTarget],
     test_mapping: dict[str, dict],
     test_results,
+    written_paths: list[Path],
 ) -> list[GenerationTarget]:
     failed_test_names = collect_failed_test_names(test_results)
     failed_generated_files = collect_failed_generated_files(test_results)
     if not failed_test_names and not failed_generated_files:
         return []
 
+    written_file_names = {Path(path).name for path in written_paths}
     repair_targets: list[GenerationTarget] = []
     for target in targets:
         entry = test_mapping.get(mapping_key(target.source_file, target.function_change.function_name), {})
         mapped_names = list(entry.get("test_names") or [])
         target_file = str(entry.get("target_file") or "")
+        if not target_file:
+            expected_target_file = _expected_generated_file_name(target)
+            if expected_target_file in written_file_names or expected_target_file in failed_generated_files:
+                target_file = expected_target_file
         failing_names = [name for name in mapped_names if name in failed_test_names]
         file_failed = bool(target_file and target_file in failed_generated_files)
         if not failing_names and not file_failed:
@@ -139,6 +152,15 @@ def _build_repair_targets(
             )
         )
     return repair_targets
+
+
+def _expected_generated_file_name(target: GenerationTarget) -> str:
+    module_name = sanitize_module_name(target.source_file)
+    if target.language == "python":
+        return f"test_ai_generated_{module_name}.py"
+    if target.language == "javascript":
+        return f"ai_generated_{module_name}.test.js"
+    return f"ai_generated_{module_name}.test.ts"
 
 
 def _merge_write_results(left: WriteResult, right: WriteResult) -> WriteResult:

@@ -10,9 +10,19 @@ if "esprima" not in sys.modules:
     sys.modules["esprima"] = types.SimpleNamespace(parseModule=lambda *args, **kwargs: types.SimpleNamespace(body=[]))
 
 if "tree_sitter_languages" not in sys.modules:
+    class _FakeNode:
+        def __init__(self) -> None:
+            self.type = "program"
+            self.named_children = []
+            self.start_byte = 0
+            self.end_byte = 0
+            self.has_error = False
+
     class _FakeParser:
-        def parse(self, _content: bytes):
-            return types.SimpleNamespace(root_node=types.SimpleNamespace(children=[]))
+        def parse(self, content: bytes):
+            root = _FakeNode()
+            root.end_byte = len(content)
+            return types.SimpleNamespace(root_node=root)
 
     sys.modules["tree_sitter_languages"] = types.SimpleNamespace(get_parser=lambda _name: _FakeParser())
 
@@ -21,11 +31,11 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from agent.main import _build_repair_targets
 from context.project_context import StructuredContext
 from context.repo_context import GenerationTarget, build_generation_context
-from diff.diff_analyzer import has_behavioral_change
+from diff.diff_analyzer import has_behavioral_change, is_config_like_file
 from diff.diff_models import CHANGE_TYPE_LOGIC, ChangedFile, FunctionChange, ParsedFunction
-from execution.failure_parser import collect_failed_generated_files
 from execution.test_runner import TestRunResult
 from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt
 
@@ -133,7 +143,113 @@ def test_collect_failed_generated_files_from_import_error() -> None:
         )
     ]
 
-    assert collect_failed_generated_files(results) == {"test_ai_generated_src_sample.py"}
+    repair_targets = _build_repair_targets(
+        [_build_memory_target()],
+        {},
+        results,
+        [Path("tests/ai_generated/test_ai_generated_src_sample.py")],
+    )
+
+    assert len(repair_targets) == 1
+    assert repair_targets[0].generation_mode == "repair"
+
+
+def test_config_like_file_is_skipped_for_trivial_functions() -> None:
+    functions = [
+        ParsedFunction(
+            function_name="load_settings",
+            start_line=1,
+            end_line=3,
+            source_code=(
+                "def load_settings():\n"
+                "    value = DEFAULT_TIMEOUT\n"
+                "    return value\n"
+            ),
+            context_code="",
+            signature="def load_settings()",
+            called_functions=[],
+            branch_count=0,
+            has_validation=False,
+        )
+    ]
+
+    assert is_config_like_file("src/app_settings.py", functions) is True
+
+
+def test_existing_test_context_only_keeps_matching_tests() -> None:
+    repo_root = Path(__file__).resolve().parents[2] / ".existing-tests-workdir"
+    if repo_root.exists():
+        shutil.rmtree(repo_root)
+
+    try:
+        generation_target = _build_sample_target(repo_root)
+        test_path = repo_root / "tests" / "test_sample.py"
+        test_path.parent.mkdir(parents=True, exist_ok=True)
+        test_path.write_text(
+            "def test_normalize_username_valid():\n"
+            "    assert normalize_username(' User ') == 'user'\n\n"
+            "def test_other_function_behavior():\n"
+            "    assert helper('X') == 'x'\n",
+            encoding="utf-8",
+        )
+
+        changed_file = ChangedFile(
+            file_path="src/sample.py",
+            language="python",
+            current_source=(repo_root / "src" / "sample.py").read_text(encoding="utf-8"),
+            previous_source=None,
+            changed_lines=[4, 5, 6, 7, 8],
+            function_changes=[generation_target.function_change],
+        )
+        generation_context = build_generation_context(
+            repo_root,
+            [changed_file],
+            [test_path],
+            StructuredContext(rules=[]),
+            StructuredContext(rules=[]),
+        )
+
+        assert len(generation_context.targets) == 1
+        existing_tests_text = generation_context.targets[0].existing_tests_text
+        assert "test_normalize_username_valid" in existing_tests_text
+        assert "test_other_function_behavior" not in existing_tests_text
+    finally:
+        if repo_root.exists():
+            shutil.rmtree(repo_root)
+
+
+def _build_memory_target() -> GenerationTarget:
+    return GenerationTarget(
+        source_file="src/sample.py",
+        language="python",
+        function_change=FunctionChange(
+            function_name="normalize_username",
+            start_line=4,
+            end_line=9,
+            source_code=(
+                "def normalize_username(username):\n"
+                "    if username is None:\n"
+                "        raise ValueError('username required')\n"
+                "    cleaned = helper(username)\n"
+                "    if not cleaned:\n"
+                "        return None\n"
+                "    return cleaned\n"
+            ),
+            context_code="",
+            signature="def normalize_username(username)",
+            change_type=CHANGE_TYPE_LOGIC,
+            called_functions=["helper"],
+            branch_count=2,
+            has_validation=True,
+        ),
+        test_id="normalize_username",
+        generation_mode="append",
+        project_rules=[],
+        pr_rules=[],
+        dependencies=[],
+        existing_tests_text="",
+        existing_test_names=[],
+    )
 
 
 def _build_sample_target(repo_root: Path) -> GenerationTarget:
