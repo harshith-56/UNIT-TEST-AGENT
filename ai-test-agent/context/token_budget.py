@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 
-MAX_INPUT_TOKENS = 4500
-MAX_DEPENDENCIES = 3
-MAX_CONTEXT_TOKENS = 300
+MAX_INPUT_TOKENS = 5500
+MAX_DEPENDENCIES = 4
+MAX_CONTEXT_TOKENS = 450
 
 
 def estimate_tokens(text: str) -> int:
