@@ -8,7 +8,7 @@ from context.event_context import load_event_context
 from context.project_context import extract_pr_context, parse_project_context
 from context.repo_context import GenerationContext, GenerationTarget, build_generation_context
 from diff.diff_analyzer import analyze_diff
-from execution.failure_parser import collect_failed_test_names, collect_failure_notes
+from execution.failure_parser import collect_failed_generated_files, collect_failed_test_names, collect_failure_notes
 from execution.test_runner import execute_tests, has_failures
 from generation.test_generator import generate_tests
 from integration.test_mapping import mapping_key
@@ -40,18 +40,32 @@ def main() -> int:
         pr_context,
     )
 
+    if not generation_context.targets and not generation_context.maintenance_actions:
+        LOGGER.info("no_generation_needed")
+        return 0
+
     generated_tests = generate_tests(generation_context.targets, config)
+    if generation_context.targets and not generated_tests:
+        LOGGER.error("no_tests_generated")
+        return 1
+
     valid_tests, invalid_tests = validate_generated_tests(generated_tests)
     if invalid_tests:
         LOGGER.warning("invalid_tests_detected count=%s", len(invalid_tests))
-    final_tests = filter_duplicate_tests(valid_tests, generation_context)
+    if generation_context.targets and not valid_tests:
+        LOGGER.error("no_valid_tests_after_validation")
+        return 1
 
+    final_tests = filter_duplicate_tests(valid_tests, generation_context)
     write_result = write_generated_tests(
         config.repo_root,
         final_tests,
         generation_context.maintenance_actions,
         config,
     )
+    if generation_context.targets and not write_result.written_paths and write_result.maintenance_changes == 0:
+        LOGGER.error("no_files_written")
+        return 1
 
     test_results = execute_tests(config.repo_root, detected_languages)
     repair_targets = _build_repair_targets(generation_context.targets, write_result.test_mapping, test_results)
@@ -90,6 +104,8 @@ def main() -> int:
 
     if has_failures(test_results):
         LOGGER.warning("generated_tests_have_failures")
+        if config.fail_on_test_failure:
+            return 1
 
     return 0
 
@@ -100,22 +116,26 @@ def _build_repair_targets(
     test_results,
 ) -> list[GenerationTarget]:
     failed_test_names = collect_failed_test_names(test_results)
-    if not failed_test_names:
+    failed_generated_files = collect_failed_generated_files(test_results)
+    if not failed_test_names and not failed_generated_files:
         return []
 
     repair_targets: list[GenerationTarget] = []
     for target in targets:
         entry = test_mapping.get(mapping_key(target.source_file, target.function_change.function_name), {})
         mapped_names = list(entry.get("test_names") or [])
+        target_file = str(entry.get("target_file") or "")
         failing_names = [name for name in mapped_names if name in failed_test_names]
-        if not failing_names:
+        file_failed = bool(target_file and target_file in failed_generated_files)
+        if not failing_names and not file_failed:
             continue
+        repair_names = failing_names or mapped_names
         repair_targets.append(
             replace(
                 target,
                 generation_mode="repair",
-                repair_test_names=failing_names,
-                repair_notes=collect_failure_notes(test_results, failing_names),
+                repair_test_names=repair_names,
+                repair_notes=collect_failure_notes(test_results, repair_names, [target_file] if target_file else []),
             )
         )
     return repair_targets

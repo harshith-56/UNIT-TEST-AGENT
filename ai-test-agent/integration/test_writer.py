@@ -102,11 +102,14 @@ def _write_generated_test(destination: Path, generated_test: GeneratedTest, mapp
         else:
             combined_body = new_body.strip()
         body = _replace_function_block(body, generated_test.language, generated_test.function_name, generated_test.test_id, combined_body)
-        updated_test_names = sorted(
-            dict.fromkeys(_mapped_test_names(mapping, generated_test) + generated_test.test_names)
-        )
+        updated_test_names = sorted(dict.fromkeys(_mapped_test_names(mapping, generated_test) + generated_test.test_names))
     elif generated_test.generation_mode == "repair":
-        repaired_body = _remove_named_tests(body, generated_test.language, generated_test.repair_test_names)
+        if generated_test.repair_test_names:
+            repaired_body = _remove_named_tests(body, generated_test.language, generated_test.repair_test_names)
+            remaining = [name for name in _mapped_test_names(mapping, generated_test) if name not in generated_test.repair_test_names]
+        else:
+            repaired_body = _remove_function_tests(body, generated_test.language, generated_test.function_name, generated_test.test_id, [])
+            remaining = []
         existing_block_body = _extract_function_block(repaired_body, generated_test.language, generated_test.function_name, generated_test.test_id)
         combined_body = existing_block_body.rstrip()
         if combined_body:
@@ -114,7 +117,6 @@ def _write_generated_test(destination: Path, generated_test: GeneratedTest, mapp
         else:
             combined_body = new_body.strip()
         body = _replace_function_block(repaired_body, generated_test.language, generated_test.function_name, generated_test.test_id, combined_body)
-        remaining = [name for name in _mapped_test_names(mapping, generated_test) if name not in generated_test.repair_test_names]
         updated_test_names = sorted(dict.fromkeys(remaining + generated_test.test_names))
     else:
         body = _replace_function_block(body, generated_test.language, generated_test.function_name, generated_test.test_id, new_body.strip())

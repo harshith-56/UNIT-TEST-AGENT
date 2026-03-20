@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from agent.config import AgentConfig
 from context.repo_context import GenerationTarget
 from llm.llm_client import LLMClient
-from llm.prompt_builder import build_llm_input, build_prompt
+from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt
 from utils.logger import get_logger
 from validation.test_naming import extract_test_names
 
@@ -37,10 +37,19 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> list
     generated_tests: list[GeneratedTest] = []
 
     for target in targets:
-        llm_input = build_llm_input(target)
-        prompt = build_prompt(llm_input)
-        content: str | None = None
+        try:
+            llm_input = build_llm_input(target)
+            prompt = build_prompt(llm_input)
+        except SkipGeneration as error:
+            LOGGER.warning(
+                "skip_generation source=%s function=%s reason=%s",
+                target.source_file,
+                target.function_change.function_name,
+                str(error),
+            )
+            continue
 
+        content: str | None = None
         for attempt in range(MAX_GENERATION_ATTEMPTS):
             LOGGER.info(
                 "test_generation_function source=%s function=%s mode=%s attempt=%s",

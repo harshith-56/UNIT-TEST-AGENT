@@ -141,7 +141,7 @@ def _resolve_dependency(
                 name=call_name,
                 source_file=str(import_reference.module_path).replace("\\", "/"),
                 function_name=function.function_name,
-                source_code=function.context_code if function.enclosing_class_name else function.source_code,
+                source_code=function.source_code,
                 score=0,
             )
     return None
@@ -164,7 +164,7 @@ def _match_same_file_dependency(
                 name=call_name,
                 source_file=str(source_path.relative_to(repo_root)).replace("\\", "/"),
                 function_name=function.function_name,
-                source_code=function.context_code if function.enclosing_class_name else function.source_code,
+                source_code=function.source_code,
                 score=0,
             )
     return None
@@ -375,3 +375,4 @@ def _parse_functions(language: str, file_path: Path, source_text: str) -> list[P
     if language == "javascript":
         return parse_js_functions(file_path, source_text)
     return parse_ts_functions(file_path, source_text)
+

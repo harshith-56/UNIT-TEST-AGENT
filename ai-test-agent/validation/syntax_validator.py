@@ -25,12 +25,17 @@ def _is_valid_generated_test(generated_test: GeneratedTest) -> bool:
         return False
     if has_duplicate_test_names(generated_test.language, generated_test.content):
         return False
+
     test_names = extract_test_names(generated_test.language, generated_test.content)
     if generated_test.generation_mode == "repair":
-        if not test_names:
+        if generated_test.repair_test_names:
+            if set(test_names) != set(generated_test.repair_test_names):
+                return False
+        elif not 1 <= len(test_names) <= 8:
             return False
     elif not 3 <= len(test_names) <= 8:
         return False
+
     if any(not name.startswith(f"test_{generated_test.test_id}_") for name in test_names):
         return False
     return is_syntax_valid(generated_test.language, generated_test.content, generated_test.source_file)

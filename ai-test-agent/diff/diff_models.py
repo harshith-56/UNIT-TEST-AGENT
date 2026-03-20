@@ -40,6 +40,7 @@ class FunctionChange:
     called_functions: list[str] = field(default_factory=list)
     branch_count: int = 0
     has_validation: bool = False
+    has_behavioral_change: bool = True
     should_skip_generation: bool = False
     skip_reason: str | None = None
 

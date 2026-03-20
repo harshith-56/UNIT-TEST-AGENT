@@ -5,6 +5,7 @@ from pathlib import Path
 
 from context.dependency_resolver import DependencyContext, extract_dependencies
 from context.project_context import StructuredContext
+from diff.diff_analyzer import should_generate_tests
 from diff.diff_models import CHANGE_TYPE_DELETION, CHANGE_TYPE_RENAME, ChangedFile, FunctionChange
 from test_discovery.test_scanner import find_related_tests
 from validation.test_naming import build_test_prefix, extract_test_names, sanitize_test_identifier
@@ -82,7 +83,7 @@ def build_generation_context(
                 )
                 continue
 
-            if function_change.should_skip_generation:
+            if not should_generate_tests(function_change):
                 continue
 
             targets.append(

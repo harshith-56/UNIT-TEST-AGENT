@@ -1,15 +1,22 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from agent.config import test_framework_for_language
 from context.dependency_resolver import DependencyContext
 from context.repo_context import GenerationTarget
 from context.token_budget import MAX_CONTEXT_TOKENS, MAX_INPUT_TOKENS, estimate_tokens, trim_rules_to_budget
 
 
+class SkipGeneration(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class LLMInput:
     function_name: str
+    language: str
+    test_framework: str
     primary_code_block: str
     dependencies: list[str]
     project_rules: list[str]
@@ -24,6 +31,8 @@ def build_llm_input(target: GenerationTarget) -> LLMInput:
 
     llm_input = LLMInput(
         function_name=target.test_id,
+        language=target.language,
+        test_framework=test_framework_for_language(target.language),
         primary_code_block=target.function_change.source_code.strip(),
         dependencies=[entry["active"] for entry in dependency_entries],
         project_rules=project_rules,
@@ -45,10 +54,12 @@ def build_prompt(llm_input: LLMInput) -> str:
         f"- Naming format: test_{llm_input.function_name}_<scenario>\n"
         "- MUST cover: valid case, edge case, boundary, invalid input, error handling, adversarial case.\n"
         if not is_repair
-        else "- Regenerate only the failing tests identified in the existing tests reference.\n- Keep the same test names for those repaired tests.\n"
+        else "- Regenerate only the failing tests identified in the existing tests reference.\n- Keep exactly the same test names for those repaired tests.\n"
     )
 
     return (
+        f"LANGUAGE: {llm_input.language}\n"
+        f"TEST FRAMEWORK: {llm_input.test_framework}\n\n"
         "PROJECT CONTEXT:\n"
         f"{project_context}\n\n"
         "PR CONTEXT:\n"
@@ -147,6 +158,9 @@ def _fit_llm_input_to_budget(llm_input: LLMInput, dependency_entries: list[dict[
             fitted_input = reduced_existing_tests
             continue
         break
+
+    if estimate_tokens(build_prompt(fitted_input)) > MAX_INPUT_TOKENS:
+        raise SkipGeneration(f"Prompt exceeds MAX_INPUT_TOKENS for {llm_input.function_name}")
     return fitted_input
 
 
@@ -176,4 +190,3 @@ def _trim_existing_tests(llm_input: LLMInput) -> LLMInput:
     if len(lines) <= 1:
         return replace(llm_input, existing_tests="")
     return replace(llm_input, existing_tests="\n".join(lines[:-1]).strip())
-

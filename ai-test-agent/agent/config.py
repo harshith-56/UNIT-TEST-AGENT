@@ -14,6 +14,12 @@ LANGUAGE_BY_EXTENSION = {
     ".tsx": "typescript",
 }
 
+TEST_FRAMEWORK_BY_LANGUAGE = {
+    "python": "pytest",
+    "javascript": "jest",
+    "typescript": "jest",
+}
+
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -25,6 +31,7 @@ class AgentConfig:
     project_context_raw: str = ""
     llm_timeout_seconds: int = 90
     comment_on_pr: bool = False
+    fail_on_test_failure: bool = False
 
 
 def load_config() -> AgentConfig:
@@ -39,6 +46,7 @@ def load_config() -> AgentConfig:
         project_context_raw=os.getenv("AI_TEST_AGENT_PROJECT_CONTEXT", "").strip(),
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
         comment_on_pr=os.getenv("AI_TEST_AGENT_COMMENT_ON_PR", "false").lower() == "true",
+        fail_on_test_failure=os.getenv("AI_TEST_AGENT_FAIL_ON_TEST_FAILURE", "false").lower() == "true",
     )
 
 
@@ -48,3 +56,7 @@ def detect_language(file_path: str) -> str | None:
 
 def detect_languages(file_paths: Iterable[str]) -> set[str]:
     return {language for path in file_paths if (language := detect_language(path))}
+
+
+def test_framework_for_language(language: str) -> str:
+    return TEST_FRAMEWORK_BY_LANGUAGE[language]

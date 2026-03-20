@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from execution.test_runner import TestRunResult
 
@@ -13,29 +14,58 @@ _JEST_FAILURE_PATTERNS = [
     re.compile(r"^[\s\u2715\u00d7]*[\u2715\u00d7]\s+(?P<name>test_[A-Za-z0-9_]+)", re.MULTILINE),
     re.compile(r"\u203a\s+(?P<name>test_[A-Za-z0-9_]+)"),
 ]
+_GENERATED_FILE_PATTERN = re.compile(
+    r"(?P<file>(?:test_ai_generated_[A-Za-z0-9_./\\-]+\.py|ai_generated_[A-Za-z0-9_./\\-]+\.test\.(?:js|ts)))"
+)
 
 
 def collect_failed_test_names(results: list[TestRunResult]) -> set[str]:
     failed: set[str] = set()
     for result in results:
-        text = "\n".join(part for part in [result.stdout, result.stderr] if part)
+        text = _joined_output(result)
         patterns = _PYTEST_FAILURE_PATTERNS if result.language == "python" else _JEST_FAILURE_PATTERNS
         for pattern in patterns:
             failed.update(match.group("name") for match in pattern.finditer(text))
     return failed
 
 
-def collect_failure_notes(results: list[TestRunResult], test_names: list[str]) -> list[str]:
-    if not test_names:
+def collect_failed_generated_files(results: list[TestRunResult]) -> set[str]:
+    failed_files: set[str] = set()
+    for result in results:
+        text = _joined_output(result)
+        for match in _GENERATED_FILE_PATTERN.finditer(text):
+            failed_files.add(Path(match.group("file")).name)
+    return failed_files
+
+
+def collect_failure_notes(
+    results: list[TestRunResult],
+    test_names: list[str] | None = None,
+    file_names: list[str] | None = None,
+) -> list[str]:
+    tracked_tests = set(test_names or [])
+    tracked_files = set(file_names or [])
+    if not tracked_tests and not tracked_files:
         return []
+
     notes: list[str] = []
     for result in results:
-        lines = [line.rstrip() for line in (result.stdout + "\n" + result.stderr).splitlines()]
+        lines = [line.rstrip() for line in _joined_output(result).splitlines()]
         for index, line in enumerate(lines):
-            if not any(test_name in line for test_name in test_names):
+            if not _line_matches_failure(line, tracked_tests, tracked_files):
                 continue
             snippet = lines[index : index + 4]
             note = " | ".join(part.strip() for part in snippet if part.strip())
             if note and note not in notes:
                 notes.append(note[:400])
     return notes[:6]
+
+
+def _joined_output(result: TestRunResult) -> str:
+    return "\n".join(part for part in [result.stdout, result.stderr] if part)
+
+
+def _line_matches_failure(line: str, tracked_tests: set[str], tracked_files: set[str]) -> bool:
+    if any(test_name in line for test_name in tracked_tests):
+        return True
+    return any(file_name in line for file_name in tracked_files)
