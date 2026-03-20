@@ -32,7 +32,8 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from agent.main import _build_repair_targets
-from context.project_context import StructuredContext
+from context.event_context import EventContext
+from context.project_context import StructuredContext, extract_pr_context, extract_pr_rules
 from context.repo_context import GenerationTarget, build_generation_context
 from diff.diff_analyzer import has_behavioral_change, is_config_like_file
 from diff.diff_models import CHANGE_TYPE_LOGIC, ChangedFile, FunctionChange, ParsedFunction
@@ -316,3 +317,34 @@ def _build_sample_target(repo_root: Path) -> GenerationTarget:
 
     assert len(generation_context.targets) == 1
     return generation_context.targets[0]
+
+
+def test_extract_pr_rules_keeps_behavioral_constraints_only() -> None:
+    rules = extract_pr_rules(
+        "Fix signup validation",
+        "Fixed bug. Now email must contain '@' and age must be >= 18. Refactored validator. Return None on failure.",
+    )
+
+    assert "email must contain '@'" in rules
+    assert "age must be >= 18" in rules
+    assert "return none on failure" in rules
+    assert all("fixed bug" not in rule for rule in rules)
+    assert all("refactor" not in rule for rule in rules)
+
+
+def test_extract_pr_context_returns_empty_for_vague_pr() -> None:
+    context = extract_pr_context(
+        EventContext(
+            repository="owner/repo",
+            pull_request_number=1,
+            base_branch="main",
+            head_branch="feature",
+            commit_sha="abc123",
+            pull_request_title="Minor changes",
+            pull_request_body="Refactored logic and improved performance.",
+        )
+    )
+
+    assert context.combined_rules() == []
+
+

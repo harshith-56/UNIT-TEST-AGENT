@@ -5,16 +5,26 @@ from dataclasses import dataclass, field
 
 import yaml
 
-from context.token_budget import MAX_CONTEXT_TOKENS, estimate_tokens, trim_rules_to_budget
 from context.event_context import EventContext
+from context.token_budget import MAX_CONTEXT_TOKENS, estimate_tokens, trim_rules_to_budget
 
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"[\r\n]+|(?<=[.!?])\s+")
-_RELEVANT_PATTERN = re.compile(
-    r"\b(must|should|require|constraint|validate|validation|invalid|return|returns|error|failure|non-empty|empty|null|none|reject|accept|only|never|always)\b",
+_BULLET_PREFIX_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*")
+_PR_SIGNAL_PATTERN = re.compile(
+    r"\b(must|should|required|return|returns|error|errors|invalid|valid|reject|rejects|accept|accepts|raise|raises|throw|throws|non-empty|empty|null|none|boundary|fallback|default|only|never|always)\b|>=|<=|==|!=|\bat\s+least\b|\bat\s+most\b",
     re.IGNORECASE,
 )
-_BEHAVIOR_PATTERN = re.compile(r"\b(return|returns|reject|accept|raise|throw|fail|fallback|default)\b", re.IGNORECASE)
+_PR_NOISE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(fixed bug|fix bug|updated code|minor changes?|misc(?:ellaneous)? changes?)\b",
+        r"\b(refactor(?:ed|ing)?|cleanup|clean up|restructure(?:d)?|rename(?:d|ing)?|format(?:ting)?|lint(?:ing)?)\b",
+        r"\b(improv(?:e|ed|ing) performance|optimization|optimized)\b",
+        r"\b(documentation|docs?|comments?)\b",
+        r"\b(tests? only|ci only|build only|dependency update|version bump)\b",
+    )
+]
 _VAGUE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -24,8 +34,16 @@ _VAGUE_PATTERNS = [
         r"^improve quality$",
         r"^etc\.?$",
         r"^do the right thing$",
+        r"^fixed bug$",
+        r"^minor changes?$",
+        r"^updated code$",
     )
 ]
+_PREFIX_FLUFF_PATTERN = re.compile(
+    r"^(?:now|please|note that|ensure that|ensures that|this pr|this change|this update|for this change)\s+",
+    re.IGNORECASE,
+)
+_MAX_PR_RULES = 8
 
 
 @dataclass(frozen=True)
@@ -60,25 +78,44 @@ def parse_project_context(raw_context: str) -> StructuredContext:
 
 
 def extract_pr_context(event_context: EventContext) -> StructuredContext:
-    raw_text = "\n".join(part for part in [event_context.pull_request_title, event_context.pull_request_body] if part.strip())
-    if not raw_text.strip():
+    extracted_rules = extract_pr_rules(event_context.pull_request_title, event_context.pull_request_body)
+    if not extracted_rules:
         return StructuredContext()
 
-    rules: list[str] = []
     constraints: list[str] = []
-    for fragment in _SENTENCE_SPLIT_PATTERN.split(raw_text):
-        normalized = _normalize_rule(fragment)
-        if not normalized or not _RELEVANT_PATTERN.search(normalized):
-            continue
-        target = constraints if not _BEHAVIOR_PATTERN.search(normalized) else rules
-        if normalized not in target:
-            target.append(normalized)
+    rules: list[str] = []
+    for rule in extracted_rules:
+        target = constraints if _is_constraint_rule(rule) else rules
+        if rule not in target:
+            target.append(rule)
+    return StructuredContext(rules=rules, constraints=constraints)
 
-    remaining_tokens = MAX_CONTEXT_TOKENS
-    trimmed_constraints = trim_rules_to_budget(constraints, remaining_tokens)
-    remaining_tokens -= estimate_tokens("\n".join(trimmed_constraints))
-    trimmed_rules = trim_rules_to_budget(rules, max(0, remaining_tokens))
-    return StructuredContext(rules=trimmed_rules, constraints=trimmed_constraints)
+
+def extract_pr_rules(pr_title: str, pr_body: str) -> list[str]:
+    raw_text = "\n".join(part for part in [pr_title, pr_body] if part.strip())
+    if not raw_text.strip():
+        return []
+
+    extracted: list[str] = []
+    seen: set[str] = set()
+    for fragment in _SENTENCE_SPLIT_PATTERN.split(raw_text):
+        cleaned_fragment = _clean_fragment(fragment)
+        if not cleaned_fragment:
+            continue
+        for candidate in _expand_rule_candidates(cleaned_fragment):
+            normalized = _normalize_pr_rule(candidate)
+            if not normalized:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            extracted.append(normalized)
+            if len(extracted) >= _MAX_PR_RULES:
+                break
+        if len(extracted) >= _MAX_PR_RULES:
+            break
+
+    return trim_rules_to_budget(extracted, MAX_CONTEXT_TOKENS)
 
 
 def _validate_entries(entries: object, field_name: str) -> list[str]:
@@ -88,7 +125,7 @@ def _validate_entries(entries: object, field_name: str) -> list[str]:
     for entry in entries:
         if not isinstance(entry, str):
             raise RuntimeError(f"{field_name} must contain only strings")
-        normalized = _normalize_rule(entry)
+        normalized = _normalize_generic_rule(entry)
         if not normalized:
             continue
         if _is_vague(normalized):
@@ -97,9 +134,74 @@ def _validate_entries(entries: object, field_name: str) -> list[str]:
     return cleaned
 
 
-def _normalize_rule(text: str) -> str:
+def _clean_fragment(text: str) -> str:
+    normalized = _BULLET_PREFIX_PATTERN.sub("", text.strip())
+    normalized = normalized.replace("\u2022", " ")
+    normalized = re.sub(r"^\s*>\s*", "", normalized)
+    normalized = re.sub(r"[`*_#]", " ", normalized)
+    normalized = " ".join(normalized.split())
+    return normalized[:240]
+
+
+def _expand_rule_candidates(fragment: str) -> list[str]:
+    if _is_pr_noise(fragment):
+        return []
+    if not _has_pr_signal(fragment):
+        return []
+
+    candidates = [fragment]
+    if " and " in fragment.lower():
+        parts = [part.strip(" ,;:-") for part in re.split(r"\s+and\s+", fragment, flags=re.IGNORECASE)]
+        if len(parts) > 1 and all(_has_pr_signal(part) and re.search(r"[a-zA-Z]{3}", part) for part in parts):
+            candidates = parts
+
+    filtered: list[str] = []
+    for candidate in candidates:
+        if _is_pr_noise(candidate):
+            continue
+        if not _has_pr_signal(candidate):
+            continue
+        filtered.append(candidate)
+    return filtered
+
+
+def _normalize_pr_rule(text: str) -> str:
+    normalized = _clean_fragment(text).lower()
+    normalized = _PREFIX_FLUFF_PATTERN.sub("", normalized)
+    normalized = normalized.rstrip(". ;:")
+    normalized = re.sub(r"\breturns\b", "return", normalized)
+    normalized = re.sub(r"\braises\b", "raise", normalized)
+    normalized = re.sub(r"\bthrows\b", "throw", normalized)
+    normalized = re.sub(r"\brejects\b", "reject", normalized)
+    normalized = re.sub(r"\baccepts\b", "accept", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized or _is_pr_noise(normalized) or _is_vague(normalized):
+        return ""
+    if not _has_pr_signal(normalized):
+        return ""
+    return normalized[:180]
+
+
+def _normalize_generic_rule(text: str) -> str:
     normalized = " ".join(text.strip().split())
     return normalized[:240]
+
+
+def _has_pr_signal(text: str) -> bool:
+    return bool(_PR_SIGNAL_PATTERN.search(text))
+
+
+def _is_pr_noise(text: str) -> bool:
+    lowered = text.strip().lower()
+    if len(lowered.split()) < 3 and not _has_pr_signal(lowered):
+        return True
+    return any(pattern.search(lowered) for pattern in _PR_NOISE_PATTERNS)
+
+
+def _is_constraint_rule(text: str) -> bool:
+    return bool(
+        re.search(r"\b(must|should|required|only|never|always)\b|>=|<=|==|!=|\bat\s+least\b|\bat\s+most\b", text, re.IGNORECASE)
+    )
 
 
 def _is_vague(text: str) -> bool:
