@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from context.token_budget import MAX_CONTEXT_TOKENS, MAX_DEPENDENCIES, MAX_INPUT_TOKENS
-
 
 LANGUAGE_BY_EXTENSION = {
     ".py": "python",
@@ -14,12 +12,6 @@ LANGUAGE_BY_EXTENSION = {
     ".jsx": "javascript",
     ".ts": "typescript",
     ".tsx": "typescript",
-}
-
-TEST_FRAMEWORK_BY_LANGUAGE = {
-    "python": "pytest",
-    "javascript": "jest",
-    "typescript": "jest",
 }
 
 
@@ -32,10 +24,6 @@ class AgentConfig:
     llm_model: str
     project_context_raw: str = ""
     llm_timeout_seconds: int = 90
-    llm_max_prompt_chars: int = 24000
-    max_input_tokens: int = MAX_INPUT_TOKENS
-    max_dependencies: int = MAX_DEPENDENCIES
-    max_context_tokens: int = MAX_CONTEXT_TOKENS
     comment_on_pr: bool = False
 
 
@@ -50,7 +38,6 @@ def load_config() -> AgentConfig:
         llm_model=os.getenv("LLM_MODEL", "").strip(),
         project_context_raw=os.getenv("AI_TEST_AGENT_PROJECT_CONTEXT", "").strip(),
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
-        llm_max_prompt_chars=int(os.getenv("LLM_MAX_PROMPT_CHARS", "24000")),
         comment_on_pr=os.getenv("AI_TEST_AGENT_COMMENT_ON_PR", "false").lower() == "true",
     )
 
@@ -61,7 +48,3 @@ def detect_language(file_path: str) -> str | None:
 
 def detect_languages(file_paths: Iterable[str]) -> set[str]:
     return {language for path in file_paths if (language := detect_language(path))}
-
-
-def test_framework_for_language(language: str) -> str:
-    return TEST_FRAMEWORK_BY_LANGUAGE[language]

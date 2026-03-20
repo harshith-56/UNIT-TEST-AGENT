@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -24,14 +24,12 @@ class LLMClient:
         self._config = config
 
     def generate(self, prompt: str) -> LLMResponse:
-        trimmed_prompt = prompt[: self._config.llm_max_prompt_chars]
-
         payload = {
             "model": self._config.llm_model,
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": "Generate only test code."},
-                {"role": "user", "content": trimmed_prompt},
+                {"role": "user", "content": prompt},
             ],
         }
 

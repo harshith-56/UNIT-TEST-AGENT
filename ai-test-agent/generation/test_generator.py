@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from agent.config import AgentConfig
 from context.repo_context import GenerationTarget
 from llm.llm_client import LLMClient
-from llm.prompt_builder import build_prompt
+from llm.prompt_builder import build_llm_input, build_prompt
 from utils.logger import get_logger
 from validation.test_naming import extract_test_names
 
@@ -14,7 +14,7 @@ from validation.test_naming import extract_test_names
 LOGGER = get_logger(__name__)
 
 MAX_GENERATION_ATTEMPTS = 5
-LLM_CALL_DELAY_SECONDS = 5
+RETRY_DELAY_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,8 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> list
     generated_tests: list[GeneratedTest] = []
 
     for target in targets:
-        prompt = build_prompt(target)
+        llm_input = build_llm_input(target)
+        prompt = build_prompt(llm_input)
         content: str | None = None
 
         for attempt in range(MAX_GENERATION_ATTEMPTS):
@@ -52,7 +53,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> list
                 response = client.generate(prompt)
             except Exception as error:
                 LOGGER.warning("llm_generation_failed error=%s", str(error))
-                time.sleep(LLM_CALL_DELAY_SECONDS)
+                time.sleep(RETRY_DELAY_SECONDS)
                 continue
 
             LOGGER.info("LLM_RAW_OUTPUT_START")
@@ -65,7 +66,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> list
                 break
 
             LOGGER.warning("empty_llm_output_retry")
-            time.sleep(LLM_CALL_DELAY_SECONDS)
+            time.sleep(RETRY_DELAY_SECONDS)
 
         if not content:
             LOGGER.error(
@@ -87,7 +88,6 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> list
                 repair_test_names=target.repair_test_names,
             )
         )
-        time.sleep(LLM_CALL_DELAY_SECONDS)
 
     return generated_tests
 

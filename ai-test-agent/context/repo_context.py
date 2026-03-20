@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent.config import test_framework_for_language
 from context.dependency_resolver import DependencyContext, extract_dependencies
 from context.project_context import StructuredContext
 from diff.diff_models import CHANGE_TYPE_DELETION, CHANGE_TYPE_RENAME, ChangedFile, FunctionChange
@@ -15,7 +14,6 @@ from validation.test_naming import build_test_prefix, extract_test_names, saniti
 class GenerationTarget:
     source_file: str
     language: str
-    framework: str
     function_change: FunctionChange
     test_id: str
     generation_mode: str
@@ -91,7 +89,6 @@ def build_generation_context(
                 GenerationTarget(
                     source_file=changed_file.file_path,
                     language=changed_file.language,
-                    framework=test_framework_for_language(changed_file.language),
                     function_change=function_change,
                     test_id=test_id,
                     generation_mode="replace" if function_change.change_type == "signature_change" else "append",
