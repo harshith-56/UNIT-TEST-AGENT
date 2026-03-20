@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from context.token_budget import MAX_CONTEXT_TOKENS, MAX_DEPENDENCIES, MAX_INPUT_TOKENS
+
 
 LANGUAGE_BY_EXTENSION = {
     ".py": "python",
@@ -28,8 +30,12 @@ class AgentConfig:
     llm_api_url: str
     llm_api_key: str
     llm_model: str
+    project_context_raw: str = ""
     llm_timeout_seconds: int = 90
     llm_max_prompt_chars: int = 24000
+    max_input_tokens: int = MAX_INPUT_TOKENS
+    max_dependencies: int = MAX_DEPENDENCIES
+    max_context_tokens: int = MAX_CONTEXT_TOKENS
     comment_on_pr: bool = False
 
 
@@ -42,6 +48,7 @@ def load_config() -> AgentConfig:
         llm_api_url=os.getenv("LLM_API_URL", "").strip(),
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
         llm_model=os.getenv("LLM_MODEL", "").strip(),
+        project_context_raw=os.getenv("AI_TEST_AGENT_PROJECT_CONTEXT", "").strip(),
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
         llm_max_prompt_chars=int(os.getenv("LLM_MAX_PROMPT_CHARS", "24000")),
         comment_on_pr=os.getenv("AI_TEST_AGENT_COMMENT_ON_PR", "false").lower() == "true",

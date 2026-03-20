@@ -13,6 +13,8 @@ class EventContext:
     base_branch: str
     head_branch: str
     commit_sha: str
+    pull_request_title: str = ""
+    pull_request_body: str = ""
 
 
 def load_event_context() -> EventContext:
@@ -49,6 +51,8 @@ def load_event_context() -> EventContext:
         base_branch=base_branch,
         head_branch=head_branch,
         commit_sha=commit_sha,
+        pull_request_title=(pull_request.get("title") or event_payload.get("title") or "").strip(),
+        pull_request_body=(pull_request.get("body") or event_payload.get("body") or "").strip(),
     )
 
 

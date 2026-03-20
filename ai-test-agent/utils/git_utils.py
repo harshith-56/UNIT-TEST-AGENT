@@ -26,3 +26,13 @@ def get_changed_files(repo_root: Path, base_branch: str) -> list[str]:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "git diff --name-only failed")
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def get_file_content_at_ref(repo_root: Path, git_ref: str, file_path: str) -> str | None:
+    result = run_git_command(["show", f"{git_ref}:{file_path}"], repo_root)
+    if result.returncode != 0:
+        stderr = result.stderr.lower()
+        if "does not exist" in stderr or "exists on disk" in stderr or "path" in stderr:
+            return None
+        raise RuntimeError(result.stderr.strip() or f"git show failed for {file_path}")
+    return result.stdout
