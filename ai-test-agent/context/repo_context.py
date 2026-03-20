@@ -1,22 +1,14 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import test_framework_for_language
-from diff.diff_models import ChangedFile, ChangedFunction
-from languages.javascript.js_parser import parse_functions as parse_js_functions
-from languages.python.python_parser import parse_functions as parse_python_functions
-from languages.typescript.ts_parser import parse_functions as parse_ts_functions
+from context.dependency_resolver import DependencyContext, extract_dependencies
+from context.project_context import StructuredContext
+from diff.diff_models import CHANGE_TYPE_DELETION, CHANGE_TYPE_RENAME, ChangedFile, FunctionChange
 from test_discovery.test_scanner import find_related_tests
-
-
-IMPORT_PATTERNS = {
-    "python": re.compile(r"^(?:from\s+\S+\s+import\s+.+|import\s+.+)$", re.MULTILINE),
-    "javascript": re.compile(r"^(?:import\s+.+|const\s+.+\s+=\s+require\(.+\))$", re.MULTILINE),
-    "typescript": re.compile(r"^(?:import\s+.+|const\s+.+\s+=\s+require\(.+\))$", re.MULTILINE),
-}
+from validation.test_naming import build_test_prefix, extract_test_names, sanitize_test_identifier
 
 
 @dataclass(frozen=True)
@@ -24,83 +16,121 @@ class GenerationTarget:
     source_file: str
     language: str
     framework: str
-    imports: str
-    helper_functions: str
-    existing_tests: str
-    changed_functions: list[ChangedFunction] = field(default_factory=list)
+    function_change: FunctionChange
+    test_id: str
+    generation_mode: str
+    project_rules: list[str]
+    pr_rules: list[str]
+    dependencies: list[DependencyContext]
+    existing_tests_text: str
+    existing_test_names: list[str]
+    repair_test_names: list[str] = field(default_factory=list)
+    repair_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MaintenanceAction:
+    source_file: str
+    language: str
+    function_name: str
+    test_id: str
+    action_type: str
+    previous_name: str | None = None
+    previous_test_id: str | None = None
+    existing_test_names: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class GenerationContext:
     targets: list[GenerationTarget]
+    maintenance_actions: list[MaintenanceAction]
 
 
-def build_generation_context(repo_root: Path, changed_files: list[ChangedFile], discovered_tests: list[Path]) -> GenerationContext:
+def build_generation_context(
+    repo_root: Path,
+    changed_files: list[ChangedFile],
+    discovered_tests: list[Path],
+    project_context: StructuredContext,
+    pr_context: StructuredContext,
+) -> GenerationContext:
     targets: list[GenerationTarget] = []
+    maintenance_actions: list[MaintenanceAction] = []
+
     for changed_file in changed_files:
         source_path = repo_root / changed_file.file_path
-        source_text = source_path.read_text(encoding="utf-8")
-        imports = _extract_imports(changed_file.language, source_text)
-        helper_functions = _extract_helpers(source_path, changed_file)
         related_tests = find_related_tests(source_path, discovered_tests)
-        existing_tests = _collect_existing_tests(related_tests, changed_file.changed_functions)
-        targets.append(
-            GenerationTarget(
-                source_file=changed_file.file_path,
-                language=changed_file.language,
-                framework=test_framework_for_language(changed_file.language),
-                imports=imports,
-                helper_functions=helper_functions,
-                existing_tests=existing_tests,
-                changed_functions=changed_file.changed_functions,
+        source_text = changed_file.current_source or changed_file.previous_source or ""
+
+        for function_change in changed_file.function_changes:
+            test_id = sanitize_test_identifier(function_change.function_name)
+            existing_tests_text, existing_test_names = _collect_existing_tests(
+                changed_file.language,
+                related_tests,
+                function_change,
             )
-        )
-    return GenerationContext(targets=targets)
+
+            if function_change.change_type in {CHANGE_TYPE_RENAME, CHANGE_TYPE_DELETION}:
+                maintenance_actions.append(
+                    MaintenanceAction(
+                        source_file=changed_file.file_path,
+                        language=changed_file.language,
+                        function_name=function_change.function_name,
+                        test_id=test_id,
+                        action_type=function_change.change_type,
+                        previous_name=function_change.previous_name,
+                        previous_test_id=sanitize_test_identifier(function_change.previous_name or function_change.function_name),
+                        existing_test_names=existing_test_names,
+                    )
+                )
+                continue
+
+            if function_change.should_skip_generation:
+                continue
+
+            targets.append(
+                GenerationTarget(
+                    source_file=changed_file.file_path,
+                    language=changed_file.language,
+                    framework=test_framework_for_language(changed_file.language),
+                    function_change=function_change,
+                    test_id=test_id,
+                    generation_mode="replace" if function_change.change_type == "signature_change" else "append",
+                    project_rules=project_context.combined_rules(),
+                    pr_rules=pr_context.combined_rules(),
+                    dependencies=extract_dependencies(
+                        repo_root=repo_root,
+                        source_file=changed_file.file_path,
+                        language=changed_file.language,
+                        source_text=source_text,
+                        function_change=function_change,
+                    ),
+                    existing_tests_text=existing_tests_text,
+                    existing_test_names=existing_test_names,
+                )
+            )
+
+    return GenerationContext(targets=targets, maintenance_actions=maintenance_actions)
 
 
-def _extract_imports(language: str, source_text: str) -> str:
-    matches = IMPORT_PATTERNS[language].findall(source_text)
-    return "\n".join(matches[:20])
-
-
-def _extract_helpers(source_path: Path, changed_file: ChangedFile) -> str:
-    parser = _select_parser(changed_file.language)
-    functions = parser(source_path)
-    changed_names = {function.function_name for function in changed_file.changed_functions}
-    helper_snippets: list[str] = []
-    for function in functions:
-        if function.function_name in changed_names:
-            continue
-        if _is_referenced(function.function_name, changed_file.changed_functions):
-            helper_snippets.append(function.source_code)
-        if len(helper_snippets) >= 3:
-            break
-    return "\n\n".join(helper_snippets)
-
-
-def _is_referenced(helper_name: str, changed_functions: list[ChangedFunction]) -> bool:
-    bare_name = helper_name.split(".")[-1]
-    for changed_function in changed_functions:
-        if bare_name in changed_function.source_code and bare_name != changed_function.function_name.split(".")[-1]:
-            return True
-    return False
-
-
-def _collect_existing_tests(test_paths: list[Path], changed_functions: list[ChangedFunction]) -> str:
+def _collect_existing_tests(
+    language: str,
+    test_paths: list[Path],
+    function_change: FunctionChange,
+) -> tuple[str, list[str]]:
+    target_prefixes = {
+        build_test_prefix(function_change.function_name),
+        build_test_prefix(function_change.previous_name or function_change.function_name),
+    }
     snippets: list[str] = []
-    function_names = {function.function_name.split(".")[-1] for function in changed_functions}
+    test_names: list[str] = []
     for path in test_paths:
         source = path.read_text(encoding="utf-8")
-        if not function_names or any(name in source for name in function_names):
-            snippets.append(source[:4000])
+        names = extract_test_names(language, source)
+        relevant_names = [name for name in names if any(name.startswith(prefix) for prefix in target_prefixes)]
+        if not relevant_names:
+            continue
+        test_names.extend(relevant_names)
+        snippets.append(source[:4000])
         if sum(len(snippet) for snippet in snippets) >= 6000:
             break
-    return "\n\n".join(snippets)
-
-
-def _select_parser(language: str):
-    if language == "python":
-        return parse_python_functions
-    if language == "javascript":
-        return parse_js_functions
-    return parse_ts_functions
+    return "\n\n".join(snippets), sorted(dict.fromkeys(test_names))
