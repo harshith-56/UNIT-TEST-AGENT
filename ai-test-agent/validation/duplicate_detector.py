@@ -33,14 +33,6 @@ def filter_duplicate_tests(generated_tests: list[GeneratedTest], generation_cont
             LOGGER.warning(f"[SKIP][{generated_test.test_id}] {reason}")
             continue
 
-        ok, reason = _check_function_call_args(
-            generated_test.content,
-            generated_test.function_name,
-        )
-        if not ok:
-            LOGGER.warning(f"[SKIP][{generated_test.test_id}] {reason}")
-            continue
-
         seen_normalized.add(normalized)
         deduplicated.append(generated_test)
     return deduplicated
@@ -96,38 +88,3 @@ def _check_generator_usage(content: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _check_function_call_args(content: str, function_name: str) -> tuple[bool, str]:
-    """
-    High-confidence check: if a function comment/docstring near the call says
-    'no arguments', 'takes no args', 'no parameters', but the test calls it
-    with positional args, flag it.
-    Also catches the common case: get_db("something") when function is get_db()
-    by checking if the call appears with args but the function definition nearby
-    shows zero parameters.
-    """
-    # Look for the function definition in the content (it may be in a comment or the test setup)
-    # Pattern: function called with args
-    calls_with_args = re.findall(
-        rf"\b{re.escape(function_name)}\s*\(\s*([^)]+)\s*\)",
-        content,
-    )
-    if not calls_with_args:
-        return True, ""
-
-    # Check if there's a nearby 'no arguments' hint
-    no_arg_hints = re.search(
-        r"(takes\s+no\s+(arg|param)|no\s+(arg|param)|zero\s+(arg|param)|\(\s*self\s*\)|\(\s*\))",
-        content,
-        re.IGNORECASE,
-    )
-
-    if calls_with_args and no_arg_hints:
-        # Filter out mock setup lines — those are expected to reference the function name
-        real_calls = [c for c in calls_with_args if c.strip() not in ("", "self")]
-        if real_calls:
-            LOGGER.warning(
-                f"[wrong_args] {function_name}() called with args {real_calls} but hints suggest zero-arg"
-            )
-            return False, "wrong_arg_count"
-
-    return True, ""

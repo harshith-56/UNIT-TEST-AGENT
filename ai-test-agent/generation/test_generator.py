@@ -165,6 +165,31 @@ def _is_truncated(content: str, language: str) -> bool:
         return True
     last = lines[-1].rstrip()
 
+    # Detect mid-word line breaks (streaming cut-off artifact)
+    # A line ending with only word characters and no punctuation after an
+    # identifier is a strong signal of truncation
+    for line in lines:
+        stripped = line.rstrip()
+        if not stripped:
+            continue
+        # Line ends with a bare word character (letter/digit/underscore)
+        # AND the line is not a complete statement (no =, :, ), ], } at end)
+        if re.match(r".*\w$", stripped) and not re.search(
+            r"""[=:,\)\]\}'"]\s*$""", stripped
+        ):
+            # Exclude lines that are complete Python keywords or identifiers
+            # on their own (like "pass", "return None", "continue")
+            if not re.match(
+                r"^\s*(pass|return|continue|break|raise|import\s+\w+|from\s+\w+)\s*$",
+                stripped,
+            ):
+                return True
+
+    # A line that is a single letter alone is always a truncation artifact
+    for line in lines[:-1]:  # check all lines except last (last might be valid)
+        if re.match(r"^\s*[a-zA-Z]\s*$", line.rstrip()):
+            return True
+
     # Incomplete trailing operator (critical — catches "assert result ==")
     if re.search(r"(==|!=|<=|>=|=|,|\(|and|or|not)\s*$", last):
         return True
