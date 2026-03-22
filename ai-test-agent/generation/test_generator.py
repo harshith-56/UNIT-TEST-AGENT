@@ -14,15 +14,19 @@ from context.repo_context import GenerationTarget
 from llm.llm_client import LLMClient
 from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt, build_retry_prompt
 from utils.logger import get_logger
-from validation.test_naming import extract_test_names, has_duplicate_test_names
+from validation.test_naming import extract_test_names
 
 
 LOGGER = get_logger(__name__)
 
 
-MAX_GENERATION_ATTEMPTS = 12
-RETRY_DELAY_SECONDS = 8
+# ✅ FIXED CONFIG
+MAX_GENERATION_ATTEMPTS = 6
+RETRY_DELAY_SECONDS = 3
+RATE_LIMIT_SLEEP_SECONDS = 10
+POST_SUCCESS_DELAY_SECONDS = 2
 MIN_OUTPUT_CHARACTERS = 24
+
 
 PLACEHOLDER_PATTERNS = (
     re.compile(r"(?<![\w*])\*{3,}(?![\w*])"),
@@ -122,13 +126,16 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
 
             try:
                 response = client.generate(attempt_prompt)
+
             except Exception as error:
                 error_text = str(error).lower()
                 last_failure_reason = "llm_request_failed"
 
+                # ✅ FIX: RETRY ON RATE LIMIT
                 if any(pattern in error_text for pattern in RATE_LIMIT_PATTERNS):
-                    last_failure_reason = "rate_limit_risk"
-                    break
+                    LOGGER.warning("Rate limit hit. Sleeping before retry...")
+                    time.sleep(RATE_LIMIT_SLEEP_SECONDS)
+                    continue
 
                 if attempt < MAX_GENERATION_ATTEMPTS - 1:
                     time.sleep(RETRY_DELAY_SECONDS)
@@ -137,7 +144,6 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
             cleaned = _strip_code_fences(response.content)
             signature = _normalized_output_signature(cleaned)
 
-           
             if previous_signature and signature == previous_signature:
                 last_failure_reason = "duplicate_output"
                 break
@@ -145,9 +151,13 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
 
             invalid_reason = _invalid_output_reason(target, cleaned)
 
-            
+            # ✅ SUCCESS
             if invalid_reason is None:
                 content = cleaned.strip() + "\n"
+
+                # ✅ THROTTLE AFTER SUCCESS
+                time.sleep(POST_SUCCESS_DELAY_SECONDS)
+
                 break
 
             last_failure_reason = invalid_reason
@@ -159,12 +169,12 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
             )
             previous_failure_reason = invalid_reason
 
-            
+            # ❌ HARD FAIL ONLY FOR BAD CONTENT
             if invalid_reason in ("placeholder_detected", "integration_test_detected"):
                 break
 
-         
-            if repeated_failure_count >= 2 or attempt_number >= 3:
+            # ✅ FIX: smarter retry control
+            if repeated_failure_count >= 3:
                 break
 
             if attempt < MAX_GENERATION_ATTEMPTS - 1:
@@ -196,6 +206,9 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
             )
         )
 
+        # ✅ GLOBAL THROTTLE BETWEEN FUNCTIONS
+        time.sleep(3)
+
     return GenerationResult(generated_tests=generated_tests, failures=failures)
 
 
@@ -205,7 +218,6 @@ def _prompt_for_attempt(llm_input, base_prompt: str, attempt_number: int, failur
 
     retry_prompt = build_retry_prompt(llm_input, failure_reason, attempt_number)
 
-  
     return (
         retry_prompt
         + "\n\nSTRICT CORRECTION:\n"
