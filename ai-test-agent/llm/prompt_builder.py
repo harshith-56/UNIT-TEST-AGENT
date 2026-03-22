@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
@@ -47,39 +47,61 @@ def build_prompt(llm_input: LLMInput) -> str:
     pr_context = "\n".join(f"- {rule}" for rule in llm_input.pr_rules) or "- None"
     dependencies = "\n\n".join(llm_input.dependencies) or "- None"
     existing_tests = llm_input.existing_tests.strip() or "None"
+
     is_repair = "Repair only these failing tests:" in existing_tests
-    instructions = (
-        f"- Generate between 3 and 8 test functions for {llm_input.function_name}.\n"
-        "- Each test must cover a UNIQUE scenario.\n"
-        f"- Naming format: test_{llm_input.function_name}_<scenario>\n"
-        "- MUST cover: valid case, edge case, boundary, invalid input, error handling, adversarial case.\n"
-        if not is_repair
-        else "- Regenerate only the failing tests identified in the existing tests reference.\n- Keep exactly the same test names for those repaired tests.\n"
-    )
+
+    if not is_repair:
+        instructions = (
+            f"- Generate between 3 and 8 test functions for {llm_input.function_name}.\n"
+            "- Each test must cover a UNIQUE scenario.\n"
+            f"- Naming format: test_{llm_input.function_name}_<scenario>\n"
+            "- MUST cover: valid case, edge case, boundary, invalid input, error handling.\n"
+        )
+    else:
+        instructions = (
+            "- Regenerate ONLY the failing tests listed below.\n"
+            "- Keep EXACT same test names.\n"
+        )
 
     return (
         f"LANGUAGE: {llm_input.language}\n"
         f"TEST FRAMEWORK: {llm_input.test_framework}\n\n"
+
         "PROJECT CONTEXT:\n"
         f"{project_context}\n\n"
+
         "PR CONTEXT:\n"
         f"{pr_context}\n\n"
-        "FUNCTION:\n"
+
+        "FUNCTION UNDER TEST:\n"
         f"{llm_input.primary_code_block}\n\n"
-        "DEPENDENCIES:\n"
+
+        "DEPENDENCIES (ONLY USE IF NECESSARY):\n"
         f"{dependencies}\n\n"
+
         "EXISTING TESTS (REFERENCE ONLY):\n"
         f"{existing_tests}\n\n"
-        "INSTRUCTIONS TO LLM:\n"
+
+        "STRICT INSTRUCTIONS:\n"
         f"{instructions}"
-        "- Avoid redundant tests.\n"
-        "- Keep tests deterministic and isolated.\n"
-        "- Use direct assertions.\n"
-        "- Infer behavior strictly from the provided code and dependency behavior.\n\n"
+        "- ONLY use information present in the given function and dependencies.\n"
+        "- DO NOT assume behavior that is not explicitly visible.\n"
+        "- DO NOT invent return values, exceptions, or side effects.\n"
+        "- DO NOT redefine the source function or its dependencies.\n"
+        "- DO NOT use 'your_module' or fake imports.\n"
+        "- If required inputs are unclear, SKIP that test case.\n"
+        "- Prefer simple, realistic inputs.\n"
+        "- Assertions must reflect actual observable behavior.\n"
+        "- Avoid comparing complex objects unless explicitly defined.\n"
+        "- Avoid testing internal implementation details.\n"
+        "- Tests must be deterministic and independent.\n"
+        "- Use direct assertions only.\n\n"
+
         "OUTPUT RULES:\n"
         "- ONLY executable code\n"
         "- NO markdown\n"
         "- NO explanations\n"
+        "- NO comments\n"
     )
 
 
@@ -113,15 +135,19 @@ def _fit_context_rules(project_rules: list[str], pr_rules: list[str]) -> tuple[l
 
     project_budget = MAX_CONTEXT_TOKENS // 2
     pr_budget = MAX_CONTEXT_TOKENS - project_budget
+
     trimmed_project = trim_rules_to_budget(project_rules, project_budget)
     trimmed_pr = trim_rules_to_budget(pr_rules, pr_budget)
 
     leftover = MAX_CONTEXT_TOKENS - estimate_tokens("\n".join([*trimmed_project, *trimmed_pr]))
+
     if leftover > 0:
-        trimmed_project = [*trimmed_project, *trim_rules_to_budget(project_rules[len(trimmed_project) :], leftover)]
+        trimmed_project = [*trimmed_project, *trim_rules_to_budget(project_rules[len(trimmed_project):], leftover)]
         leftover = MAX_CONTEXT_TOKENS - estimate_tokens("\n".join([*trimmed_project, *trimmed_pr]))
+
     if leftover > 0:
-        trimmed_pr = [*trimmed_pr, *trim_rules_to_budget(pr_rules[len(trimmed_pr) :], leftover)]
+        trimmed_pr = [*trimmed_pr, *trim_rules_to_budget(pr_rules[len(trimmed_pr):], leftover)]
+
     return trimmed_project, trimmed_pr
 
 
@@ -131,17 +157,20 @@ def _fit_existing_tests(existing_tests: str) -> str:
 
     kept_lines: list[str] = []
     used_tokens = 0
+
     for line in existing_tests.splitlines():
         line_tokens = estimate_tokens(line)
         if kept_lines and used_tokens + line_tokens > 250:
             break
         kept_lines.append(line)
         used_tokens += line_tokens
+
     return "\n".join(kept_lines).strip()
 
 
 def _fit_llm_input_to_budget(llm_input: LLMInput, dependency_entries: list[dict[str, str]]) -> LLMInput:
     fitted_input = llm_input
+
     while estimate_tokens(build_prompt(fitted_input)) > MAX_INPUT_TOKENS:
         trimmed_input = _trim_context(fitted_input)
         if trimmed_input != fitted_input:
@@ -157,10 +186,12 @@ def _fit_llm_input_to_budget(llm_input: LLMInput, dependency_entries: list[dict[
         if reduced_existing_tests != fitted_input:
             fitted_input = reduced_existing_tests
             continue
+
         break
 
     if estimate_tokens(build_prompt(fitted_input)) > MAX_INPUT_TOKENS:
         raise SkipGeneration(f"Prompt exceeds MAX_INPUT_TOKENS for {llm_input.function_name}")
+
     return fitted_input
 
 
@@ -174,11 +205,13 @@ def _trim_context(llm_input: LLMInput) -> LLMInput:
 
 def _summarize_dependencies(llm_input: LLMInput, dependency_entries: list[dict[str, str]]) -> LLMInput:
     active_dependencies = list(llm_input.dependencies)
+
     for index, current_dependency in enumerate(active_dependencies):
         summary_dependency = dependency_entries[index]["summary"]
         if current_dependency != summary_dependency:
             active_dependencies[index] = summary_dependency
             return replace(llm_input, dependencies=active_dependencies)
+
     return llm_input
 
 
@@ -187,6 +220,8 @@ def _trim_existing_tests(llm_input: LLMInput) -> LLMInput:
         return llm_input
 
     lines = llm_input.existing_tests.splitlines()
+
     if len(lines) <= 1:
         return replace(llm_input, existing_tests="")
+
     return replace(llm_input, existing_tests="\n".join(lines[:-1]).strip())
