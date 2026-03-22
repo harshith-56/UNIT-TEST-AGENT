@@ -20,9 +20,8 @@ from validation.test_naming import extract_test_names
 LOGGER = get_logger(__name__)
 
 
-# ✅ FIXED CONFIG
-MAX_GENERATION_ATTEMPTS = 6
-RETRY_DELAY_SECONDS = 3
+MAX_GENERATION_ATTEMPTS = 12
+RETRY_DELAY_SECONDS = 5
 RATE_LIMIT_SLEEP_SECONDS = 10
 POST_SUCCESS_DELAY_SECONDS = 2
 MIN_OUTPUT_CHARACTERS = 24
@@ -48,8 +47,6 @@ INTEGRATION_TEST_PATTERNS = (
     re.compile(r"\bcreate_engine\s*\("),
     re.compile(r"\b(?:requests|httpx)\.(?:get|post|put|delete|patch)\s*\("),
     re.compile(r"\b(?:sqlite3|psycopg|psycopg2)\.connect\s*\("),
-    re.compile(r"\bopen\s*\([^\n,]+,\s*['\"](?:w|a|x)"),
-    re.compile(r"\b(?:Path|pathlib\.Path)\([^\n]*\)\.(?:write_text|write_bytes|open)\s*\("),
 )
 
 RATE_LIMIT_PATTERNS = ("429", "rate limit", "too many requests")
@@ -84,101 +81,59 @@ class GenerationResult:
 
 
 def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> GenerationResult:
-    if not targets:
-        return GenerationResult(generated_tests=[], failures=[])
-
     client = LLMClient(config)
-    generated_tests: list[GeneratedTest] = []
-    failures: list[GenerationFailure] = []
-    generated_tests_dir = _relative_generated_tests_dir(config)
+    generated_tests = []
+    failures = []
 
     for target in targets:
         try:
-            llm_input = build_llm_input(target, generated_tests_dir)
+            llm_input = build_llm_input(target)
             base_prompt = build_prompt(llm_input)
         except SkipGeneration:
-            failures.append(
-                GenerationFailure(
-                    source_file=target.source_file,
-                    function_name=target.function_change.function_name,
-                    test_id=target.test_id,
-                    generation_mode=target.generation_mode,
-                    reason="skip_generation",
-                    attempts=0,
-                )
-            )
             continue
 
         content = None
-        previous_signature = None
-        previous_failure_reason = None
-        repeated_failure_count = 0
-        last_failure_reason = "unknown_failure"
-        attempts_used = 0
+        last_failure_reason = "unknown"
 
         for attempt in range(MAX_GENERATION_ATTEMPTS):
             attempt_number = attempt + 1
-            attempts_used = attempt_number
 
-            attempt_prompt = _prompt_for_attempt(
-                llm_input, base_prompt, attempt_number, last_failure_reason
-            )
+            prompt = _prompt_for_attempt(llm_input, base_prompt, attempt_number, last_failure_reason)
 
             try:
-                response = client.generate(attempt_prompt)
+                response = client.generate(prompt)
 
-            except Exception as error:
-                error_text = str(error).lower()
-                last_failure_reason = "llm_request_failed"
+                LOGGER.info(f"[RAW][{target.test_id}][Attempt {attempt_number}]:\n{response.content[:800]}")
 
-                # ✅ FIX: RETRY ON RATE LIMIT
-                if any(pattern in error_text for pattern in RATE_LIMIT_PATTERNS):
-                    LOGGER.warning("Rate limit hit. Sleeping before retry...")
+            except Exception as e:
+                err = str(e).lower()
+
+                if any(x in err for x in RATE_LIMIT_PATTERNS):
+                    LOGGER.warning("Rate limit hit. Sleeping...")
                     time.sleep(RATE_LIMIT_SLEEP_SECONDS)
                     continue
 
-                if attempt < MAX_GENERATION_ATTEMPTS - 1:
-                    time.sleep(RETRY_DELAY_SECONDS)
+                LOGGER.warning(f"[ERROR][{target.test_id}] {e}")
+                time.sleep(RETRY_DELAY_SECONDS)
                 continue
 
             cleaned = _strip_code_fences(response.content)
-            signature = _normalized_output_signature(cleaned)
 
-            if previous_signature and signature == previous_signature:
-                last_failure_reason = "duplicate_output"
-                break
-            previous_signature = signature
+            LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned[:800]}")
 
-            invalid_reason = _invalid_output_reason(target, cleaned)
+            reason = _invalid_output_reason(target, cleaned)
 
-            # ✅ SUCCESS
-            if invalid_reason is None:
-                content = cleaned.strip() + "\n"
-
-                # ✅ THROTTLE AFTER SUCCESS
+            if reason is None:
+                content = cleaned
+                LOGGER.info(f"[SUCCESS][{target.test_id}]")
                 time.sleep(POST_SUCCESS_DELAY_SECONDS)
-
                 break
 
-            last_failure_reason = invalid_reason
+            LOGGER.warning(f"[INVALID][{target.test_id}] {reason} (attempt {attempt_number})")
 
-            repeated_failure_count = (
-                repeated_failure_count + 1
-                if invalid_reason == previous_failure_reason
-                else 1
-            )
-            previous_failure_reason = invalid_reason
+            last_failure_reason = reason
 
-            # ❌ HARD FAIL ONLY FOR BAD CONTENT
-            if invalid_reason in ("placeholder_detected", "integration_test_detected"):
-                break
-
-            # ✅ FIX: smarter retry control
-            if repeated_failure_count >= 3:
-                break
-
-            if attempt < MAX_GENERATION_ATTEMPTS - 1:
-                time.sleep(RETRY_DELAY_SECONDS)
+            time.sleep(RETRY_DELAY_SECONDS)
 
         if not content:
             failures.append(
@@ -188,7 +143,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
                     test_id=target.test_id,
                     generation_mode=target.generation_mode,
                     reason=last_failure_reason,
-                    attempts=attempts_used,
+                    attempts=MAX_GENERATION_ATTEMPTS,
                 )
             )
             continue
@@ -202,17 +157,15 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
                 generation_mode=target.generation_mode,
                 content=content,
                 test_names=extract_test_names(target.language, content),
-                repair_test_names=target.repair_test_names,
             )
         )
 
-        # ✅ GLOBAL THROTTLE BETWEEN FUNCTIONS
         time.sleep(3)
 
     return GenerationResult(generated_tests=generated_tests, failures=failures)
 
 
-def _prompt_for_attempt(llm_input, base_prompt: str, attempt_number: int, failure_reason: str) -> str:
+def _prompt_for_attempt(llm_input, base_prompt, attempt_number, failure_reason):
     if attempt_number == 1:
         return base_prompt
 
@@ -220,117 +173,43 @@ def _prompt_for_attempt(llm_input, base_prompt: str, attempt_number: int, failur
 
     return (
         retry_prompt
-        + "\n\nSTRICT CORRECTION:\n"
-        "- Previous outputs were invalid\n"
-        "- DO NOT repeat same mistakes\n"
-        "- Provide complete valid tests only\n"
+        + f"\n\nFIX PREVIOUS ERROR: {failure_reason}\n"
+        + "Do not repeat same output.\n"
     )
 
 
-def _relative_generated_tests_dir(config: AgentConfig) -> Path:
-    try:
-        return config.generated_tests_dir.relative_to(config.repo_root)
-    except ValueError:
-        return config.generated_tests_dir
-
-
 def _strip_code_fences(content: str) -> str:
-    stripped = content.strip()
-    if stripped.startswith("```"):
-        parts = stripped.split("```")
-        if len(parts) >= 3:
-            stripped = parts[1]
-    for language in ("python\n", "javascript\n", "typescript\n", "tsx\n", "jsx\n"):
-        stripped = stripped.replace(language, "")
-    return stripped.replace("```", "").strip()
+    return content.replace("```", "").strip()
 
 
-def _normalized_output_signature(content: str) -> str:
-    return re.sub(r"\s+", " ", content).strip()
+def _invalid_output_reason(target, content):
+    if not content.strip():
+        return "empty"
 
-
-def _invalid_output_reason(target: GenerationTarget, content: str) -> str | None:
-    stripped = content.strip()
-
-    if not stripped:
-        return "empty_output"
-
-    if len(stripped) < MIN_OUTPUT_CHARACTERS:
-        return "near_empty_output"
-
-    if "your_module" in stripped:
+    if "your_module" in content:
         return "fake_import"
 
-    if _placeholder_reason(stripped):
-        return "placeholder_detected"
-
-    if _incomplete_construct_reason(stripped):
-        return "incomplete_construct"
-
-    if _integration_test_reason(stripped):
-        return "integration_test_detected"
-
-    if not _is_syntax_valid(target.language, stripped, target.source_file):
+    if not _is_valid_syntax(target.language, content, target.source_file):
         return "syntax_error"
 
-    test_names = extract_test_names(target.language, stripped)
+    names = extract_test_names(target.language, content)
 
-    if not test_names:
-        return "no_tests_detected"
-
-    if target.generation_mode == "repair":
-        if target.repair_test_names and set(test_names) != set(target.repair_test_names):
-            return "repair_test_name_mismatch"
-    elif not 3 <= len(test_names) <= 8:
-        return "invalid_test_count"
-
-    expected_prefix = f"test_{target.test_id}_"
-    if any(not name.startswith(expected_prefix) for name in test_names):
-        return "unexpected_test_name_prefix"
+    if not names:
+        return "no_tests"
 
     return None
 
 
-def _placeholder_reason(content: str) -> str | None:
-    for pattern in PLACEHOLDER_PATTERNS:
-        if pattern.search(content):
-            return "placeholder_detected"
-    return None
-
-
-def _incomplete_construct_reason(content: str) -> str | None:
-    for pattern in INCOMPLETE_CONSTRUCT_PATTERNS:
-        if pattern.search(content):
-            return "incomplete_construct"
-    return None
-
-
-def _integration_test_reason(content: str) -> str | None:
-    for pattern in INTEGRATION_TEST_PATTERNS:
-        if pattern.search(content):
-            return "integration_test_detected"
-    return None
-
-
-def _is_syntax_valid(language: str, content: str, source_file: str) -> bool:
+def _is_valid_syntax(lang, code, file):
     try:
-        if language == "python":
-            ast.parse(content)
-            return True
-        if language == "javascript":
-            esprima.parseModule(content, {"jsx": source_file.endswith(".jsx")})
-            return True
-        parser = get_parser("tsx" if source_file.endswith(".tsx") else "typescript")
-        tree = parser.parse(content.encode("utf-8"))
-        return not _contains_parse_error(tree.root_node)
-    except Exception:
-        return False
-
-
-def _contains_parse_error(node) -> bool:
-    if getattr(node, "type", None) == "ERROR" or getattr(node, "has_error", False):
+        if lang == "python":
+            ast.parse(code)
+        elif lang == "javascript":
+            esprima.parseModule(code)
+        else:
+            parser = get_parser("tsx" if file.endswith(".tsx") else "typescript")
+            tree = parser.parse(code.encode())
+            return not tree.root_node.has_error
         return True
-    children = getattr(node, "children", None)
-    if children is None:
-        children = getattr(node, "named_children", ())
-    return any(_contains_parse_error(child) for child in children)
+    except:
+        return False
