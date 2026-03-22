@@ -82,11 +82,20 @@ def build_generation_context(
                         test_id=test_id,
                         action_type=function_change.change_type,
                         previous_name=function_change.previous_name,
-                        previous_test_id=sanitize_test_identifier(function_change.previous_name or function_change.function_name),
+                        previous_test_id=sanitize_test_identifier(
+                            function_change.previous_name or function_change.function_name
+                        ),
                         existing_test_names=existing_test_names,
                     )
                 )
-                continue
+                # Deletions never need new tests
+                if function_change.change_type == CHANGE_TYPE_DELETION:
+                    continue
+                # Pure rename with no logic change: maintenance only, no generation
+                if not function_change.has_behavioral_change:
+                    continue
+                # Rename + logic change: fall through to generate new tests below
+                # (do NOT continue — let GenerationTarget creation run)
 
             if not should_generate_tests(function_change):
                 continue

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -55,17 +56,44 @@ def discover_existing_tests(repo_root: Path) -> list[Path]:
     return sorted(discovered)
 
 
-def find_related_tests(source_file: Path, discovered_tests: list[Path]) -> list[Path]:
+COMMON_SEGMENTS = {
+    "src", "lib", "app", "api", "core", "utils", "helpers",
+    "backend", "frontend", "common", "shared", "base", "main",
+    "services", "models", "views", "controllers", "routes",
+    "tests", "test", "spec",
+}
+
+
+def find_related_tests(
+    source_file: Path,
+    discovered_tests: list[Path],
+) -> list[Path]:
     source_stem = source_file.stem.lower()
-    source_parts = {part.lower() for part in source_file.parts}
     related: list[Path] = []
+
     for test_path in discovered_tests:
         test_name = test_path.name.lower()
-        if source_stem in test_name:
+
+        # Condition 1: source stem appears in test file name
+        # (require at least 4 chars to avoid matching "api", "db")
+        if len(source_stem) >= 4 and source_stem in test_name:
             related.append(test_path)
             continue
-        if any(part.lower() in source_parts for part in test_path.parts):
+
+        # Condition 2: cleaned test stem matches source stem
+        # Strip common test prefixes/suffixes
+        test_stem = test_path.stem.lower()
+        test_stem = re.sub(
+            r"^test_|_test$|^test|test$|\.test$|\.spec$", "", test_stem
+        ).strip("_")
+
+        if (
+            len(source_stem) >= 4
+            and len(test_stem) >= 4
+            and (source_stem in test_stem or test_stem in source_stem)
+        ):
             related.append(test_path)
+
     return sorted(set(related))
 
 

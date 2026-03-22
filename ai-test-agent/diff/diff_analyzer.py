@@ -307,9 +307,23 @@ def _build_function_change(
 
 
 def _should_skip_generation(function: ParsedFunction) -> bool:
-    meaningful_lines = [line for line in function.source_code.splitlines() if line.strip() and not line.strip().startswith("@")] 
-    has_validation = function.has_validation or bool(_VALIDATION_HINT_PATTERN.search(function.source_code))
-    return len(meaningful_lines) < 10 and function.branch_count == 0 and not has_validation
+    meaningful_lines = [
+        line for line in function.source_code.splitlines()
+        if line.strip()
+        and not line.strip().startswith("@")
+        and not re.match(r"^\s*(async\s+)?def\s+\w+", line)
+        and not re.match(r"^\s*(async\s+)?function\s+\w+", line)
+        and not re.match(r"^\s*class\s+\w+", line)
+    ]
+    has_validation = (
+        function.has_validation
+        or bool(_VALIDATION_HINT_PATTERN.search(function.source_code))
+    )
+    return (
+        len(meaningful_lines) < 10
+        and function.branch_count == 0
+        and not has_validation
+    )
 
 
 def _function_is_trivial(function: ParsedFunction) -> bool:

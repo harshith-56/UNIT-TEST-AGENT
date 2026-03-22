@@ -95,14 +95,32 @@ def _write_generated_test(destination: Path, generated_test: GeneratedTest, mapp
     merged_imports = _merge_imports(existing_imports, new_imports)
 
     if generated_test.generation_mode == "append":
-        existing_block_body = _extract_function_block(body, generated_test.language, generated_test.function_name, generated_test.test_id)
-        combined_body = existing_block_body.rstrip()
-        if combined_body:
-            combined_body += "\n\n" + new_body.strip()
+        existing_block_body = _extract_function_block(
+            body, generated_test.language,
+            generated_test.function_name, generated_test.test_id
+        )
+        # Filter existing tests — keep only valid ones
+        valid_existing = _filter_valid_tests(
+            existing_block_body,
+            generated_test.language,
+            generated_test.source_file,
+        )
+        # Merge: valid old tests + new tests
+        if valid_existing.strip():
+            combined_body = valid_existing.rstrip() + "\n\n" + new_body.strip()
         else:
             combined_body = new_body.strip()
-        body = _replace_function_block(body, generated_test.language, generated_test.function_name, generated_test.test_id, combined_body)
-        updated_test_names = sorted(dict.fromkeys(_mapped_test_names(mapping, generated_test) + generated_test.test_names))
+        body = _replace_function_block(
+            body, generated_test.language,
+            generated_test.function_name, generated_test.test_id,
+            combined_body
+        )
+        old_names = _extract_test_names_from_content(
+            valid_existing, generated_test.language
+        )
+        updated_test_names = sorted(dict.fromkeys(
+            old_names + generated_test.test_names
+        ))
     elif generated_test.generation_mode == "repair":
         if generated_test.repair_test_names:
             repaired_body = _remove_named_tests(body, generated_test.language, generated_test.repair_test_names)
@@ -140,6 +158,65 @@ def _write_generated_test(destination: Path, generated_test: GeneratedTest, mapp
 def _mapped_test_names(mapping: dict[str, dict], generated_test: GeneratedTest) -> list[str]:
     entry = mapping.get(mapping_key(generated_test.source_file, generated_test.function_name), {})
     return list(entry.get("test_names") or [])
+
+
+def _filter_valid_tests(
+    block_content: str,
+    language: str,
+    source_file: str,
+) -> str:
+    """
+    Given a block of test code, return only the tests that are
+    still syntactically valid and not stubs.
+    Splits the block into individual test functions and validates each.
+    """
+    if not block_content.strip():
+        return ""
+
+    # For Python: split on "def test_" at start of line
+    # For JS/TS: split on "it(" or "test(" or "function test_"
+    if language == "python":
+        pattern = re.compile(
+            r"(?=^\s*def\s+test_)", re.MULTILINE
+        )
+    else:
+        pattern = re.compile(
+            r"(?=^\s*(?:it|test)\s*\(|^\s*(?:async\s+)?function\s+test_)",
+            re.MULTILINE
+        )
+
+    parts = pattern.split(block_content)
+    valid_parts = []
+
+    for part in parts:
+        if not part.strip():
+            continue
+        # Skip stubs
+        if re.search(
+            r"(pass\s*#\s*TODO|raise\s+NotImplementedError|#\s*implement|#\s*fill\s+in)",
+            part, re.IGNORECASE
+        ):
+            continue
+        # Keep if syntax is valid
+        try:
+            if language == "python":
+                import ast
+                ast.parse(part)
+            valid_parts.append(part.strip())
+        except SyntaxError:
+            continue  # drop invalid test
+
+    return "\n\n".join(valid_parts)
+
+
+def _extract_test_names_from_content(
+    content: str, language: str
+) -> list[str]:
+    """Extract test function names from a block of test code."""
+    from validation.test_naming import extract_test_names
+    if not content.strip():
+        return []
+    return extract_test_names(language, content)
 
 
 def _delete_mapping_entries(mapping: dict[str, dict], action: MaintenanceAction) -> None:
@@ -213,13 +290,43 @@ def _rename_function_tests(content: str, language: str, old_name: str, new_name:
     return _clean_spacing(updated)
 
 
-def _rename_block_body(body: str, old_name: str, new_name: str, old_test_id: str, new_test_id: str) -> str:
-    updated = body.replace(f"test_{old_test_id}_", f"test_{new_test_id}_")
-    updated = updated.replace(old_name, new_name)
+def _rename_block_body(
+    body: str,
+    old_name: str,
+    new_name: str,
+    old_test_id: str,
+    new_test_id: str,
+) -> str:
+    # Step 1: rename test function definitions and calls by prefix
+    updated = body.replace(
+        f"test_{old_test_id}_",
+        f"test_{new_test_id}_"
+    )
+
+    # Step 2: rename the function-under-test calls using word boundary
+    # to avoid corrupting unrelated identifiers
     old_bare = old_name.split(".")[-1]
     new_bare = new_name.split(".")[-1]
     if old_bare != new_bare:
-        updated = re.sub(rf"\b{re.escape(old_bare)}\b", new_bare, updated)
+        # Replace as function call: old_name( → new_name(
+        updated = re.sub(
+            rf"\b{re.escape(old_bare)}\s*\(",
+            f"{new_bare}(",
+            updated
+        )
+        # Replace in string assertions: "old_name" → "new_name"
+        updated = re.sub(
+            rf'(["\']){re.escape(old_bare)}(["\'])',
+            rf'\g<1>{new_bare}\g<2>',
+            updated
+        )
+        # Replace in import statements
+        updated = re.sub(
+            rf"\b{re.escape(old_bare)}\b",
+            new_bare,
+            updated
+        )
+
     return updated
 
 
