@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import ast
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import esprima
-from tree_sitter_languages import get_parser
 
 from agent.config import AgentConfig
 from context.repo_context import GenerationTarget
 from llm.llm_client import LLMClient
 from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt, build_retry_prompt
 from utils.logger import get_logger
+from validation.syntax_validator import validate_content
 from validation.test_naming import extract_test_names
 
 
@@ -101,7 +98,8 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
             prompt = _prompt_for_attempt(llm_input, base_prompt, attempt_number, last_failure_reason)
 
             try:
-                response = client.generate(prompt)
+                retry_temperature = None if attempt_number == 1 else min(0.2 + (attempt_number * 0.05), 0.8)
+                response = client.generate(prompt, temperature=retry_temperature)
 
                 LOGGER.info(f"[RAW][{target.test_id}][Attempt {attempt_number}]:\n{response.content[:800]}")
 
@@ -119,21 +117,27 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
 
             cleaned = _strip_code_fences(response.content)
 
+            LOGGER.debug(f"[CLEANED_FULL][{target.test_id}]:\n{cleaned}")
             LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned[:800]}")
 
-            reason = _invalid_output_reason(target, cleaned)
+            valid, reason = validate_content(
+                target.language,
+                cleaned,
+                target.source_file,
+            )
+            if not valid:
+                if reason == "truncated":
+                    last_lines = "\n".join(cleaned.splitlines()[-3:])
+                    LOGGER.warning(f"[TRUNCATED][{target.test_id}] Last 3 lines:\n{last_lines}")
+                LOGGER.warning(f"[INVALID][{target.test_id}] {reason} (attempt {attempt_number})")
+                last_failure_reason = reason
+                time.sleep(RETRY_DELAY_SECONDS)
+                continue
 
-            if reason is None:
-                content = cleaned
-                LOGGER.info(f"[SUCCESS][{target.test_id}]")
-                time.sleep(POST_SUCCESS_DELAY_SECONDS)
-                break
-
-            LOGGER.warning(f"[INVALID][{target.test_id}] {reason} (attempt {attempt_number})")
-
-            last_failure_reason = reason
-
-            time.sleep(RETRY_DELAY_SECONDS)
+            content = cleaned
+            LOGGER.info(f"[SUCCESS][{target.test_id}]")
+            time.sleep(POST_SUCCESS_DELAY_SECONDS)
+            break
 
         if not content:
             failures.append(
@@ -168,48 +172,47 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
 def _prompt_for_attempt(llm_input, base_prompt, attempt_number, failure_reason):
     if attempt_number == 1:
         return base_prompt
-
     retry_prompt = build_retry_prompt(llm_input, failure_reason, attempt_number)
-
-    return (
-        retry_prompt
-        + f"\n\nFIX PREVIOUS ERROR: {failure_reason}\n"
-        + "Do not repeat same output.\n"
-    )
+    return retry_prompt + f"\n\nPrevious attempt {attempt_number - 1} failed with: {failure_reason}. Fix exactly this issue and nothing else.\n"
 
 
 def _strip_code_fences(content: str) -> str:
-    return content.replace("```", "").strip()
+    lines = content.splitlines()
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            continue  # skip opening ```python, ```js, closing ``` etc
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
 
 
-def _invalid_output_reason(target, content):
-    if not content.strip():
-        return "empty"
-
-    if "your_module" in content:
-        return "fake_import"
-
-    if not _is_valid_syntax(target.language, content, target.source_file):
-        return "syntax_error"
-
-    names = extract_test_names(target.language, content)
-
-    if not names:
-        return "no_tests"
-
-    return None
-
-
-def _is_valid_syntax(lang, code, file):
-    try:
-        if lang == "python":
-            ast.parse(code)
-        elif lang == "javascript":
-            esprima.parseModule(code)
-        else:
-            parser = get_parser("tsx" if file.endswith(".tsx") else "typescript")
-            tree = parser.parse(code.encode())
-            return not tree.root_node.has_error
+def _is_truncated(content: str, language: str) -> bool:
+    lines = [l for l in content.splitlines() if l.strip()]
+    if not lines:
         return True
-    except:
-        return False
+    last = lines[-1].rstrip()
+
+    # Incomplete trailing operator (critical — catches "assert result ==")
+    if re.search(r"(==|!=|<=|>=|=|,|\(|and|or|not)\s*$", last):
+        return True
+
+    # Python-specific incomplete block starters
+    if language == "python":
+        if last.endswith(":"):
+            return True
+        if re.match(r"^\s*(def|class|async\s+def|async\s+for|async\s+with)\s*$", last):
+            return True
+
+    # JS/TS incomplete declarations
+    if language in ("javascript", "typescript"):
+        if re.match(r"^\s*(function|=>|async\s+function)\s*$", last):
+            return True
+
+    # Universal: unbalanced open parens/brackets across full content
+    opens = content.count("(") + content.count("[") + content.count("{")
+    closes = content.count(")") + content.count("]") + content.count("}")
+    if opens - closes > 1:
+        return True
+
+    return False

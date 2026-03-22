@@ -23,10 +23,10 @@ class LLMClient:
             raise RuntimeError("LLM_API_URL, LLM_API_KEY, and LLM_MODEL must be configured")
         self._config = config
 
-    def generate(self, prompt: str) -> LLMResponse:
+    def generate(self, prompt: str, temperature: float | None = None) -> LLMResponse:
         payload = {
             "model": self._config.llm_model,
-            "temperature": 0,
+            "temperature": temperature if temperature is not None else 0,
             "messages": [
                 {"role": "system", "content": "Generate only test code."},
                 {"role": "user", "content": prompt},

@@ -80,7 +80,9 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- NEVER use 'your_module'\n"
         "- ALWAYS provide COMPLETE arguments\n"
         "- NEVER invent fields or parameters\n"
-        "- ONLY use real imports from code, dependencies, or hints\n\n"
+        "- ONLY use real imports from code, dependencies, or hints\n"
+        "- NEVER cut off output mid-function — finish every function you start\n"
+        "- NEVER generate more tests than you can complete — fewer complete tests beats more broken ones\n\n"
 
         "====================\n"
         "TEST TYPE (STRICT)\n"
@@ -168,6 +170,25 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- DO NOT mock internal logic\n\n"
 
         "====================\n"
+        "GENERATOR FUNCTIONS\n"
+        "====================\n"
+        "- If the function under test contains 'yield', it is a generator\n"
+        "- Generators MUST be tested with next() or list():\n"
+        "  CORRECT:   db = next(get_db())\n"
+        "  CORRECT:   results = list(get_items())\n"
+        "  WRONG:     db = get_db(); db.query(...)  ← this will crash\n"
+        "  WRONG:     result = get_db(); assert result.execute()\n"
+        "- NEVER call methods directly on the return value of a generator function\n\n"
+
+        "====================\n"
+        "COMPLETENESS (NON-NEGOTIABLE)\n"
+        "====================\n"
+        "- Your output must be 100% complete with no cut-off lines\n"
+        "- The last line must be a complete statement — closing paren, bracket, or a pass\n"
+        "- Never end output with: =, ==, ,, (, and, or, not\n"
+        "- If running out of space: stop BEFORE starting a new test, not in the middle of one\n\n"
+
+        "====================\n"
         "FINAL OUTPUT\n"
         "====================\n"
         "- ONLY executable test code\n"
@@ -178,22 +199,52 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
     base = build_prompt(llm_input)
 
     correction = (
-        "\n\nPREVIOUS OUTPUT WAS INVALID.\n"
-        "FIX STRICTLY:\n"
+        "\n\n====================\n"
+        "PREVIOUS OUTPUT REJECTED\n"
+        "====================\n"
+        f"SPECIFIC FAILURE REASON: {failure_reason}\n\n"
+        "You MUST fix exactly this issue. Do not change anything else.\n\n"
+        "General rules that must also hold:\n"
         "- Remove ALL placeholders (***, ..., ???)\n"
         "- Provide COMPLETE arguments\n"
         "- DO NOT use your_module\n"
-        "- Use valid imports from hints\n"
+        "- Use valid imports from hints only\n"
         "- Generate ONLY UNIT tests\n"
         "- DO NOT use DB, TestClient, or create_engine\n"
-        "- Ensure code is executable\n"
+        "- Ensure every function is complete before starting the next\n"
     )
 
-    if attempt_number >= 4:
+    if failure_reason == "truncated":
         correction += (
-            "- If unsure, use simple valid dummy inputs\n"
-            "- Prefer smaller correct tests over complex invalid ones\n"
+            "\nYOUR OUTPUT WAS CUT OFF. Rules:\n"
+            "- Generate FEWER tests this time — 2 or 3 maximum\n"
+            "- Make absolutely sure the last test is fully closed\n"
+            "- The final line must be a complete statement\n"
         )
+
+    if failure_reason in ("fake_import_your_module", "placeholder_import", "fake_import_js"):
+        correction += (
+            "\nYOUR IMPORTS WERE INVALID. Rules:\n"
+            "- Only import from paths listed in IMPORT HINTS above\n"
+            "- Never use your_module, example_module, or any placeholder path\n"
+        )
+
+    if "generator" in failure_reason or failure_reason == "generator_not_unwrapped":
+        correction += (
+            "\nGENERATOR USAGE WAS WRONG. Rules:\n"
+            "- Use next(function()) to get a single value\n"
+            "- Use list(function()) to get all values\n"
+            "- Never call methods on the raw generator object\n"
+        )
+
+    if attempt_number >= 7:
+        correction += (
+            "\n\nCRITICAL — attempt {attempt_number} of 12:\n"
+            "- Generate ONLY 2 simple tests\n"
+            "- Use only basic assert statements\n"
+            "- No complex mocking — patch only what is absolutely necessary\n"
+            "- The last line of your output must close all open blocks\n"
+        ).format(attempt_number=attempt_number)
 
     return base + correction
 
