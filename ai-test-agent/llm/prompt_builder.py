@@ -55,7 +55,7 @@ def build_prompt(llm_input: LLMInput) -> str:
             f"- Generate between 3 and 8 test functions for {llm_input.function_name}.\n"
             "- Each test must cover a UNIQUE scenario.\n"
             f"- Naming format: test_{llm_input.function_name}_<scenario>\n"
-            "- MUST cover: valid case, edge case, boundary, invalid input, error handling.\n"
+            "- ONLY test behaviors explicitly visible in the function.\n"
         )
     else:
         instructions = (
@@ -84,20 +84,59 @@ def build_prompt(llm_input: LLMInput) -> str:
 
         "STRICT INSTRUCTIONS:\n"
         f"{instructions}"
-        "- ONLY use information present in the given function and dependencies.\n"
-        "- DO NOT assume behavior that is not explicitly visible.\n"
-        "- DO NOT invent return values, exceptions, or side effects.\n"
-        "- DO NOT redefine the source function or its dependencies.\n"
-        "- DO NOT use 'your_module' or fake imports.\n"
-        "- If required inputs are unclear, SKIP that test case.\n"
-        "- Prefer simple, realistic inputs.\n"
-        "- Assertions must reflect actual observable behavior.\n"
-        "- Avoid comparing complex objects unless explicitly defined.\n"
-        "- Avoid testing internal implementation details.\n"
-        "- Tests must be deterministic and independent.\n"
-        "- Use direct assertions only.\n\n"
 
-        "OUTPUT RULES:\n"
+        # ---------------- CORE RULES ----------------
+        "- ONLY use behavior explicitly visible in the provided code.\n"
+        "- DO NOT assume behavior, return structure, or hidden logic.\n"
+        "- DO NOT invent attributes, responses, or exceptions.\n"
+        "- DO NOT redefine the function or dependencies.\n"
+
+        # ---------------- ANTI-HALLUCINATION ----------------
+        "- DO NOT use placeholders like '***'.\n"
+        "- DO NOT use fake imports like 'your_module'.\n"
+        "- DO NOT generate code with undefined variables.\n"
+
+        # ---------------- MOCKING (LANGUAGE AWARE) ----------------
+        "MOCKING RULES:\n"
+        "- If function interacts with external systems (DB, API, filesystem):\n"
+        "  → MUST use mocking.\n"
+
+        "Python:\n"
+        "- Use unittest.mock (MagicMock, patch)\n"
+        "- Or pytest monkeypatch\n"
+
+        "JavaScript / TypeScript:\n"
+        "- Use jest.fn(), jest.mock()\n"
+        "- Or vi.fn() (Vitest)\n"
+
+        "Mocking constraints:\n"
+        "- Simulate success and failure scenarios\n"
+        "- Use side_effect / mockImplementation for errors\n"
+        "- Verify interactions (calls, arguments, counts)\n"
+
+        "DO NOT:\n"
+        "- create real database connections\n"
+        "- call create_engine or real DB clients\n"
+        "- call real APIs or network\n"
+        "- use filesystem\n"
+
+        # ---------------- LANGUAGE RULE ----------------
+        "LANGUAGE RULES:\n"
+        "- Use idiomatic syntax of the given language\n"
+        "- Python → pytest style (assert)\n"
+        "- JS/TS → jest/vi (test(), expect())\n"
+        "- DO NOT mix frameworks across languages\n"
+
+        # ---------------- ASSERTION RULES ----------------
+        "- Assertions must match actual return values from code\n"
+        "- Avoid comparing complex objects unless explicitly defined\n"
+        "- Prefer primitive inputs unless schema is clearly defined\n"
+
+        # ---------------- SAFETY ----------------
+        "- If behavior is unclear → SKIP that test case\n"
+        "- Do not over-test or create unrealistic scenarios\n"
+
+        "\nOUTPUT RULES:\n"
         "- ONLY executable code\n"
         "- NO markdown\n"
         "- NO explanations\n"
