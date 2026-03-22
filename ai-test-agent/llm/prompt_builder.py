@@ -51,15 +51,9 @@ def build_prompt(llm_input: LLMInput) -> str:
     is_repair = "Repair only these failing tests:" in existing_tests
 
     if not is_repair:
-        instructions = (
-            f"Generate 3 to 8 HIGH QUALITY test functions for {llm_input.function_name}.\n"
-            f"Naming: test_{llm_input.function_name}_<scenario>\n"
-        )
+        instructions = f"Generate 3 to 6 HIGH QUALITY tests for {llm_input.function_name}."
     else:
-        instructions = (
-            "Regenerate ONLY failing tests.\n"
-            "Keep EXACT same names.\n"
-        )
+        instructions = "Fix ONLY failing tests. Keep same names."
 
     return (
         f"LANGUAGE: {llm_input.language}\n"
@@ -80,90 +74,85 @@ def build_prompt(llm_input: LLMInput) -> str:
         "EXISTING TESTS:\n"
         f"{existing_tests}\n\n"
 
-        # ================== STEP 1 ==================
-        "STEP 1 - ANALYZE FUNCTION TYPE (MANDATORY):\n"
-        "Classify the function into ONE of the following:\n"
-        "- PURE FUNCTION (no side effects)\n"
-        "- SIDE EFFECT FUNCTION (DB, API, file, external calls)\n"
-        "- VALIDATION FUNCTION (input checks, conditions)\n"
-        "- CONTROLLER / ROUTE (combines multiple components)\n\n"
+        # ================= STEP 1 =================
+        "STEP 1: CLASSIFY FUNCTION TYPE\n"
+        "- PURE (no side effects)\n"
+        "- SIDE EFFECT (DB/API/file/external)\n"
+        "- VALIDATION\n"
+        "- CONTROLLER/ROUTE\n\n"
 
-        # ================== STEP 2 ==================
-        "STEP 2 - EXTRACT BEHAVIOR:\n"
-        "- Identify ONLY explicit behaviors from code\n"
-        "- Inputs\n"
-        "- Conditions\n"
-        "- Return values\n"
-        "- Errors explicitly present\n"
-        "- If behavior is not visible → DO NOT TEST IT\n\n"
+        # ================= STEP 2 =================
+        "STEP 2: EXTRACT BEHAVIOR (STRICT)\n"
+        "- Use ONLY explicitly visible logic\n"
+        "- Identify inputs, conditions, returns\n"
+        "- DO NOT assume missing logic\n"
+        "- DO NOT combine multiple errors unless code does it\n\n"
 
-        # ================== STEP 3 ==================
-        "STEP 3 - GENERATE TESTS:\n"
-        f"{instructions}"
-
-        # ================== CORE RULES ==================
-        "CRITICAL RULES:\n"
-        "- DO NOT assume hidden logic\n"
-        "- DO NOT invent behaviors\n"
-        "- DO NOT combine multiple errors unless code does it\n"
-        "- DO NOT introduce new flows\n"
-
-        # ================== INPUT RULES ==================
-        "INPUT RULES:\n"
-        "- Construct inputs ONLY using visible schema\n"
+        # ================= STEP 3 =================
+        "STEP 3: BUILD INPUTS\n"
+        "- Use ONLY visible schema/classes\n"
+        "- If class exists → MUST use it\n"
         "- NEVER use *** or placeholders\n"
-        "- NEVER invent fields or arguments\n"
-        "- If schema unclear → SKIP test\n"
+        "- NEVER invent fields\n"
+        "- If unclear → SKIP that test\n\n"
 
-        # ================== IMPORT RULES ==================
-        "IMPORT RULES:\n"
-        "- DO NOT use 'your_module'\n"
-        "- DO NOT guess import paths\n"
-        "- ONLY import from visible code context\n"
+        # ================= STEP 4 =================
+        "STEP 4: GENERATE TESTS\n"
+        f"{instructions}\n\n"
 
-        # ================== MOCKING ==================
+        # ================= IMPORT RULES =================
+        "IMPORT RULES (CRITICAL):\n"
+        "- Reuse imports EXACTLY from provided code or dependencies\n"
+        "- If relative import exists (e.g., from .schemas import X), reuse it\n"
+        "- Infer module path from file structure if needed\n"
+        "- NEVER use 'your_module'\n"
+        "- NEVER redefine classes or functions already provided\n"
+        "- If class (e.g., SignupRequest) exists → IMPORT it, DO NOT recreate\n\n"
+
+        # ================= MOCKING =================
         "MOCKING RULES (CONDITIONAL):\n"
-        "- PURE FUNCTION → NO mocking\n"
-        "- SIDE EFFECT FUNCTION → USE mocking\n"
-        "- CONTROLLER → mock dependencies only\n"
+        "- PURE → NO mocking\n"
+        "- SIDE EFFECT → mock external dependencies ONLY\n"
+        "- CONTROLLER → mock dependencies, not internal logic\n"
 
-        "Language specific:\n"
         "Python:\n"
         "- unittest.mock (MagicMock, patch)\n"
         "- pytest monkeypatch\n"
 
-        "JavaScript / TypeScript:\n"
-        "- jest.fn(), jest.mock()\n"
-        "- vi.fn()\n"
+        "JS/TS:\n"
+        "- jest.fn(), jest.mock(), vi.fn()\n"
 
-        "Mocking constraints:\n"
-        "- Mock ONLY what is explicitly used\n"
-        "- Simulate success and failure\n"
-        "- Use side_effect / mockImplementation\n"
-        "- Verify calls (assert_called_once / toHaveBeenCalled)\n"
+        "Constraints:\n"
+        "- Mock ONLY functions actually called\n"
+        "- If commit() exists → mock commit(), not add()\n"
+        "- If rollback() exists → assert rollback()\n"
+        "- DO NOT mock non-existent functions\n"
+        "- DO NOT create real DB/API/filesystem\n\n"
 
-        "DO NOT:\n"
-        "- create real DB, API, or filesystem\n"
-        "- mock non-existent functions\n"
+        # ================= SPECIAL CASE =================
+        "GENERATOR RULE:\n"
+        "- If function uses 'yield', test using next(generator)\n\n"
 
-        # ================== ASSERTION ==================
+        # ================= ASSERTIONS =================
         "ASSERTION RULES:\n"
         "- Match EXACT return values\n"
-        "- DO NOT assume object structure\n"
-        "- DO NOT assert unknown properties\n"
+        "- DO NOT assume structure not in code\n"
+        "- DO NOT invent outputs\n\n"
 
-        # ================== QUALITY ==================
-        "QUALITY RULES:\n"
-        "- NO redundant tests\n"
-        "- Cover distinct logic branches only\n"
-        "- Prefer correctness over quantity\n"
+        # ================= HARD CONSTRAINTS =================
+        "STRICT PROHIBITIONS:\n"
+        "- DO NOT redefine source code\n"
+        "- DO NOT copy source into tests\n"
+        "- DO NOT invent behavior\n"
+        "- DO NOT invent exceptions\n"
+        "- DO NOT generate placeholder values\n\n"
 
-        # ================== OUTPUT ==================
-        "\nOUTPUT:\n"
+        # ================= OUTPUT =================
+        "OUTPUT:\n"
         "- ONLY executable code\n"
         "- NO markdown\n"
-        "- NO explanation\n"
         "- NO comments\n"
+        "- NO explanation\n"
     )
 
 
