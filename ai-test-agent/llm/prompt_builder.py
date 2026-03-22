@@ -47,11 +47,12 @@ def build_llm_input(target: GenerationTarget, generated_tests_dir: Path | str = 
 
 
 def build_prompt(llm_input: LLMInput) -> str:
+    dependencies = "\n\n".join(llm_input.dependencies) or "- None"
+    import_hints = "\n".join(f"- {hint}" for hint in llm_input.import_hints) or "- None"
+    existing_tests = llm_input.existing_tests.strip() or "None"
+
     project_context = "\n".join(f"- {r}" for r in llm_input.project_rules) or "- None"
     pr_context = "\n".join(f"- {r}" for r in llm_input.pr_rules) or "- None"
-    dependencies = "\n\n".join(llm_input.dependencies) or "- None"
-    import_hints = "\n".join(f"- {h}" for h in llm_input.import_hints) or "- None"
-    existing_tests = llm_input.existing_tests.strip() or "None"
 
     is_repair = "Repair only these failing tests:" in existing_tests
 
@@ -75,7 +76,7 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- NO markdown\n"
         "- NO explanations\n"
         "- NO comments\n"
-        "- NO placeholders (***, ..., ???, TODO)\n"
+        "- NO placeholders (***, ..., ???, TODO, TBD)\n"
         "- NEVER use 'your_module'\n"
         "- ALWAYS provide COMPLETE arguments\n"
         "- NEVER invent fields or parameters\n"
@@ -132,11 +133,10 @@ def build_prompt(llm_input: LLMInput) -> str:
         "====================\n"
         "- DO NOT write weak assertions\n"
         "- DO NOT use 'assert result is not None'\n"
-        "- DO NOT use type checks unless necessary\n"
         "- Assertions must validate REAL behavior\n\n"
 
         "====================\n"
-        "INPUT GENERATION RULES\n"
+        "INPUT RULES\n"
         "====================\n"
         "- Use ONLY visible schema/classes\n"
         "- NEVER leave arguments incomplete\n"
@@ -145,9 +145,9 @@ def build_prompt(llm_input: LLMInput) -> str:
         "  SignupRequest(username='user', email='a@b.com', password='validpass123')\n\n"
 
         "====================\n"
-        "BEHAVIORAL VALIDATION\n"
+        "BEHAVIOR RULES\n"
         "====================\n"
-        "- Infer behavior ONLY from code\n"
+        "- Infer behavior ONLY from given code\n"
         "- DO NOT assume hidden logic\n"
         "- DO NOT invent outputs\n\n"
 
@@ -158,16 +158,14 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- Include invalid inputs\n"
         "- Include wrong types\n"
         "- Include edge cases\n"
-        "- Include boundary values\n"
-        "- Include malformed inputs\n\n"
+        "- Include boundary values\n\n"
 
         "====================\n"
         "MOCKING RULES\n"
         "====================\n"
         "- PURE functions → NO mocking\n"
         "- SIDE EFFECT → mock external dependencies ONLY\n"
-        "- DO NOT mock internal logic\n"
-        "- Mock ONLY actually called dependencies\n\n"
+        "- DO NOT mock internal logic\n\n"
 
         "====================\n"
         "FINAL OUTPUT\n"
@@ -177,53 +175,41 @@ def build_prompt(llm_input: LLMInput) -> str:
 
 
 def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number: int) -> str:
-    dependencies = "\n\n".join(llm_input.dependencies) or "- None"
-    import_hints = "\n".join(f"- {hint}" for hint in llm_input.import_hints) or "- None"
-    existing_tests = llm_input.existing_tests.strip() or "None"
-    condensed_rules = _retry_rules(llm_input)
-    correction_lines = [
-        "- Previous output was invalid or incomplete.",
-        f"- Previous failure reason: {failure_reason}.",
-        "- NEVER use 'your_module' or any made-up local module.",
-        "- ONLY import from visible code, dependency snippets, import hints, or known test framework modules.",
-        "- NEVER use placeholders such as ***, ..., ???, TODO, or TBD.",
-        "- Every constructor and function call must have complete arguments.",
-        "- If a value is required, use a realistic dummy value instead of omitting it.",
-        "- Output complete executable tests only.",
-    ]
-    if attempt_number >= 5:
-        correction_lines.extend(
-            [
-                "- If unsure about imports, infer them from the source file path or import hints.",
-                "- Prefer smaller, correct tests over broad but invalid coverage.",
-                "- Do not repeat a previous invalid structure.",
-            ]
+    base = build_prompt(llm_input)
+
+    correction = (
+        "\n\nPREVIOUS OUTPUT WAS INVALID.\n"
+        "FIX STRICTLY:\n"
+        "- Remove ALL placeholders (***, ..., ???)\n"
+        "- Provide COMPLETE arguments\n"
+        "- DO NOT use your_module\n"
+        "- Use valid imports from hints\n"
+        "- Generate ONLY UNIT tests\n"
+        "- DO NOT use DB, TestClient, or create_engine\n"
+        "- Ensure code is executable\n"
+    )
+
+    if attempt_number >= 4:
+        correction += (
+            "- If unsure, use simple valid dummy inputs\n"
+            "- Prefer smaller correct tests over complex invalid ones\n"
         )
 
-    corrections = "\n".join(correction_lines)
+    return base + correction
+
+
+def _prompt_rules(llm_input: LLMInput) -> str:
+    project_rules = "\n".join(f"- {rule}" for rule in llm_input.project_rules[:3]) or "- None"
+    pr_rules = "\n".join(f"- {rule}" for rule in llm_input.pr_rules[:3]) or "- None"
     return (
-        f"LANGUAGE: {llm_input.language}\n"
-        f"TEST FRAMEWORK: {llm_input.test_framework}\n\n"
-        "FUNCTION:\n"
-        f"{llm_input.primary_code_block}\n\n"
-        "IMPORT HINTS:\n"
-        f"{import_hints}\n\n"
-        "DEPENDENCIES:\n"
-        f"{dependencies}\n\n"
-        "EXISTING TESTS:\n"
-        f"{existing_tests}\n\n"
-        "KEEP THESE RULES:\n"
-        f"{condensed_rules}\n\n"
-        "TEST NAMING:\n"
-        f"- Use names like test_{llm_input.function_name}_<scenario>\n"
-        "- In repair mode, keep the same failing test names\n\n"
-        "CORRECTIONS (STRICT):\n"
-        f"{corrections}\n\n"
-        "OUTPUT:\n"
-        "- ONLY executable code\n"
-        "- NO markdown\n"
-        "- NO comments\n"
-        "- NO explanation\n"
+        "- Generate UNIT tests only; mock side effects instead of using real DB engines, network calls, or file writes.\n"
+        "- Ban placeholders such as ***, ..., ???, TODO, and TBD.\n"
+        "- Never use 'your_module'.\n"
+        "- Use complete constructor and function arguments.\n"
+        "- Use real imports from the code, dependencies, or import hints.\n"
+        "- If the function uses yield, treat it as a generator and test it via iteration, for example list(function_call()).\n"
+        f"{project_rules}\n"
+        f"{pr_rules}"
     )
 
 
@@ -277,13 +263,6 @@ def _python_module_path(source_file: str) -> str:
     return ".".join(parts)
 
 
-def _retry_rules(llm_input: LLMInput) -> str:
-    rules: list[str] = []
-    rules.extend(f"- {rule}" for rule in llm_input.project_rules[:3])
-    rules.extend(f"- {rule}" for rule in llm_input.pr_rules[:3])
-    return "\n".join(rules) or "- None"
-
-
 def _dependency_entry(dependency: DependencyContext) -> dict[str, str]:
     location = f" ({dependency.source_file})" if dependency.source_file else ""
     full = f"- {dependency.name}{location}\n{dependency.content.strip()}"
@@ -310,14 +289,12 @@ def _fit_existing_tests(existing_tests: str) -> str:
 
     kept_lines: list[str] = []
     used_tokens = 0
-
     for line in existing_tests.splitlines():
         line_tokens = estimate_tokens(line)
         if kept_lines and used_tokens + line_tokens > 250:
             break
         kept_lines.append(line)
         used_tokens += line_tokens
-
     return "\n".join(kept_lines).strip()
 
 
@@ -358,13 +335,11 @@ def _trim_context(llm_input: LLMInput) -> LLMInput:
 
 def _summarize_dependencies(llm_input: LLMInput, dependency_entries: list[dict[str, str]]) -> LLMInput:
     active_dependencies = list(llm_input.dependencies)
-
     for index, current_dependency in enumerate(active_dependencies):
         summary_dependency = dependency_entries[index]["summary"]
         if current_dependency != summary_dependency:
             active_dependencies[index] = summary_dependency
             return replace(llm_input, dependencies=active_dependencies)
-
     return llm_input
 
 
@@ -373,8 +348,6 @@ def _trim_existing_tests(llm_input: LLMInput) -> LLMInput:
         return llm_input
 
     lines = llm_input.existing_tests.splitlines()
-
     if len(lines) <= 1:
         return replace(llm_input, existing_tests="")
-
     return replace(llm_input, existing_tests="\n".join(lines[:-1]).strip())

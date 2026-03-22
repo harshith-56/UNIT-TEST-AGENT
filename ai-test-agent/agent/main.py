@@ -47,14 +47,12 @@ def main() -> int:
         return 0
 
     generation_result = generate_tests(generation_context.targets, config)
-    generation_failure_count = len(generation_result.failures)
     if generation_result.failures:
         LOGGER.warning("generation_failures_detected count=%s", len(generation_result.failures))
 
     valid_tests, invalid_tests = validate_generated_tests(generation_result.generated_tests)
     if invalid_tests:
         LOGGER.warning("invalid_tests_detected count=%s", len(invalid_tests))
-    generation_failure_count += len(invalid_tests)
 
     final_tests = filter_duplicate_tests(valid_tests, generation_context)
     if generation_context.targets and not final_tests:
@@ -90,13 +88,11 @@ def main() -> int:
     if repair_targets:
         LOGGER.info("repair_targets_detected count=%s", len(repair_targets))
         repair_result = generate_tests(repair_targets, config)
-        generation_failure_count += len(repair_result.failures)
         if repair_result.failures:
             LOGGER.warning("repair_generation_failures_detected count=%s", len(repair_result.failures))
         valid_repairs, invalid_repairs = validate_generated_tests(repair_result.generated_tests)
         if invalid_repairs:
             LOGGER.warning("invalid_repaired_tests_detected count=%s", len(invalid_repairs))
-        generation_failure_count += len(invalid_repairs)
         repair_context = GenerationContext(targets=repair_targets, maintenance_actions=[])
         repaired_tests = filter_duplicate_tests(valid_repairs, repair_context)
         if repaired_tests:
@@ -106,14 +102,15 @@ def main() -> int:
         else:
             LOGGER.warning("no_valid_repairs_to_write count=%s", len(repair_targets))
 
+    generated_test_count = len(final_tests) + len(repaired_tests)
     LOGGER.info(
-        "agent_run_summary changed_files=%s targets=%s generated=%s repaired=%s invalid=%s generation_failures=%s written=%s maintenance=%s",
+        "agent_run_summary changed_files=%s targets=%s generated=%s repaired=%s invalid=%s failures=%s written=%s maintenance=%s",
         len(changed_files),
         len(generation_context.targets),
         len(final_tests),
         len(repaired_tests),
         len(invalid_tests) + len(invalid_repairs),
-        generation_failure_count,
+        len(generation_result.failures) + len(repair_result.failures),
         len(write_result.written_paths),
         write_result.maintenance_changes,
     )
@@ -121,19 +118,18 @@ def main() -> int:
     if config.comment_on_pr:
         post_pr_comment(
             event_context,
-            len(final_tests) + len(repaired_tests),
+            generated_test_count,
             len(write_result.written_paths),
             test_results,
         )
 
+    if generation_context.targets and generated_test_count == 0:
+        LOGGER.error("no_tests_generated")
+        return 1
+
     if has_failures(test_results):
         LOGGER.warning("generated_tests_have_failures")
         if config.fail_on_test_failure:
-            return 1
-
-    if generation_failure_count:
-        LOGGER.warning("generation_failures_total count=%s", generation_failure_count)
-        if config.fail_on_generation_failure:
             return 1
 
     return 0
