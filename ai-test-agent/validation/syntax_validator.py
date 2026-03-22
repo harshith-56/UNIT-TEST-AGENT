@@ -120,32 +120,35 @@ def _is_truncated(content: str, language: str) -> bool:
         return True
     last = lines[-1].rstrip()
 
-    # Detect mid-word line breaks (streaming cut-off artifact)
-    # A line ending with only word characters and no punctuation after an
-    # identifier is a strong signal of truncation
+    # Fix 2: Detect genuine mid-word cuts and single-letter orphan lines
+    COMPLETE_ENDINGS = re.compile(
+        r"""(\)|]|}|'|"|None|True|False|pass|continue|break|\d+)\s*$"""
+    )
     for line in lines:
         stripped = line.rstrip()
         if not stripped:
             continue
-        # Line ends with a bare word character (letter/digit/underscore)
-        # AND the line is not a complete statement (no =, :, ), ], } at end)
-        if re.match(r".*\w$", stripped) and not re.search(
-            r"""[=:,\)\]\}'"]\s*$""", stripped
-        ):
-            # Exclude lines that are complete Python keywords or identifiers
-            # on their own (like "pass", "return None", "continue")
-            if not re.match(
-                r"^\s*(pass|return|continue|break|raise|import\s+\w+|from\s+\w+)\s*$",
-                stripped,
-            ):
-                return True
-
-    # A line that is a single letter alone is always a truncation artifact
-    for line in lines[:-1]:  # check all lines except last (last might be valid)
-        if re.match(r"^\s*[a-zA-Z]\s*$", line.rstrip()):
+        # Single orphan letter = truncation artifact
+        if re.match(r"^\s*[a-zA-Z]\s*$", stripped):
             return True
+        # Line ends with bare word chars AND is not a recognized complete ending
+        if re.match(r".*[a-zA-Z_]\w*$", stripped):
+            if not COMPLETE_ENDINGS.search(stripped):
+                # Make sure it's not just a keyword/builtin on its own line
+                bare_keyword = re.match(
+                    r"^\s*(pass|return|continue|break|raise|import\s+[\w,\s]+|from\s+[\w.]+\s+import\s+[\w,\s*]+)\s*$",
+                    stripped,
+                )
+                if not bare_keyword:
+                    return True
 
-    if re.search(r"(==|!=|<=|>=|=|,|\(|and|or|not)\s*$", last):
+    # Fix 3: Trailing operator check — avoid false positive on "is not None"
+    if re.search(r"(==|!=|<=|>=|(?<!\w)=(?!\w)|,|\()\s*$", last):
+        return True
+    if re.search(r"\b(and|or)\s*$", last):
+        return True
+    # "not" only counts if it is the very last word with nothing after
+    if re.match(r".*\bnot\s*$", last):
         return True
 
     if language == "python":
@@ -158,10 +161,15 @@ def _is_truncated(content: str, language: str) -> bool:
         if re.match(r"^\s*(function|=>|async\s+function)\s*$", last):
             return True
 
-    opens = content.count("(") + content.count("[") + content.count("{")
-    closes = content.count(")") + content.count("]") + content.count("}")
-    if opens - closes > 1:
-        return True
+    # Fix 1: Only flag severe bracket imbalance (> 3) to avoid false positives
+    # from unmatched brackets inside string literals
+    try:
+        opens = content.count("(") + content.count("[") + content.count("{")
+        closes = content.count(")") + content.count("]") + content.count("}")
+        if opens - closes > 3:
+            return True
+    except Exception:
+        pass
 
     return False
 
