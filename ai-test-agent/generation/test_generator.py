@@ -20,8 +20,8 @@ from validation.test_naming import extract_test_names, has_duplicate_test_names
 LOGGER = get_logger(__name__)
 
 
-MAX_GENERATION_ATTEMPTS = 7
-RETRY_DELAY_SECONDS = 5
+MAX_GENERATION_ATTEMPTS = 12
+RETRY_DELAY_SECONDS = 8
 MIN_OUTPUT_CHARACTERS = 24
 
 PLACEHOLDER_PATTERNS = (
