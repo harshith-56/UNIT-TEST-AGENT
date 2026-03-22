@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
 
 from agent.config import AgentConfig
 from context.repo_context import GenerationTarget
+from generation.test_models import GeneratedTest, GenerationFailure, GenerationResult
 from llm.llm_client import LLMClient
 from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt, build_retry_prompt
 from utils.logger import get_logger
@@ -48,33 +47,6 @@ INTEGRATION_TEST_PATTERNS = (
 
 RATE_LIMIT_PATTERNS = ("429", "rate limit", "too many requests")
 
-
-@dataclass(frozen=True)
-class GeneratedTest:
-    source_file: str
-    language: str
-    function_name: str
-    test_id: str
-    generation_mode: str
-    content: str
-    test_names: list[str] = field(default_factory=list)
-    repair_test_names: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class GenerationFailure:
-    source_file: str
-    function_name: str
-    test_id: str
-    generation_mode: str
-    reason: str
-    attempts: int
-
-
-@dataclass(frozen=True)
-class GenerationResult:
-    generated_tests: list[GeneratedTest]
-    failures: list[GenerationFailure] = field(default_factory=list)
 
 
 def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> GenerationResult:

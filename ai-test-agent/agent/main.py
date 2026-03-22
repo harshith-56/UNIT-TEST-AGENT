@@ -11,7 +11,8 @@ from context.repo_context import GenerationContext, GenerationTarget, build_gene
 from diff.diff_analyzer import analyze_diff
 from execution.failure_parser import collect_failed_generated_files, collect_failed_test_names, collect_failure_notes
 from execution.test_runner import execute_tests, has_failures
-from generation.test_generator import GenerationResult, generate_tests
+from generation.test_generator import generate_tests
+from generation.test_models import GenerationResult
 from integration.test_mapping import mapping_key
 from integration.test_writer import WriteResult, write_generated_tests
 from reporting.pr_commenter import post_pr_comment

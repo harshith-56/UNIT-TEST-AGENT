@@ -7,7 +7,7 @@ from pathlib import Path
 import esprima
 from tree_sitter_languages import get_parser
 
-from generation.test_generator import GeneratedTest
+from generation.test_models import GeneratedTest
 from utils.logger import get_logger
 from validation.test_naming import extract_test_names, has_duplicate_test_names
 

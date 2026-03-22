@@ -6,7 +6,7 @@ import re
 
 from agent.config import AgentConfig
 from context.repo_context import MaintenanceAction
-from generation.test_generator import GeneratedTest
+from generation.test_models import GeneratedTest
 from integration.test_mapping import load_test_mapping, mapping_key, save_test_mapping
 from utils.file_utils import ensure_directory, sanitize_module_name
 from validation.test_naming import extract_test_names

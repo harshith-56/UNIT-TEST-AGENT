@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from context.repo_context import GenerationContext
-from generation.test_generator import GeneratedTest
+from generation.test_models import GeneratedTest
 from utils.logger import get_logger
 from validation.test_naming import extract_test_names
 
