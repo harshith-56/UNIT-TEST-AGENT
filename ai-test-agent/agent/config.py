@@ -32,6 +32,7 @@ class AgentConfig:
     llm_timeout_seconds: int = 90
     comment_on_pr: bool = False
     fail_on_test_failure: bool = False
+    fail_on_generation_failure: bool = False
 
 
 def load_config() -> AgentConfig:
@@ -47,6 +48,7 @@ def load_config() -> AgentConfig:
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
         comment_on_pr=os.getenv("AI_TEST_AGENT_COMMENT_ON_PR", "false").lower() == "true",
         fail_on_test_failure=os.getenv("AI_TEST_AGENT_FAIL_ON_TEST_FAILURE", "false").lower() == "true",
+        fail_on_generation_failure=os.getenv("AI_TEST_AGENT_FAIL_ON_GENERATION_FAILURE", "false").lower() == "true",
     )
 
 

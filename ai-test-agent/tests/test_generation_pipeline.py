@@ -31,13 +31,15 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from agent.main import _build_repair_targets
+from agent import main as agent_main
+from agent.config import AgentConfig
 from context.event_context import EventContext
 from context.project_context import StructuredContext, extract_pr_context, extract_pr_rules
-from context.repo_context import GenerationTarget, build_generation_context
+from context.repo_context import GenerationContext, GenerationTarget, build_generation_context
 from diff.diff_analyzer import has_behavioral_change, is_config_like_file
 from diff.diff_models import CHANGE_TYPE_LOGIC, ChangedFile, FunctionChange, ParsedFunction
 from execution.test_runner import TestRunResult
+from generation.test_generator import GenerationFailure, GenerationResult, _invalid_output_reason, generate_tests
 from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt
 
 
@@ -59,12 +61,139 @@ def test_generation_pipeline_smoke() -> None:
         assert "PROJECT CONTEXT:" in prompt
         assert "PR CONTEXT:" in prompt
         assert "FUNCTION:" in prompt
+        assert "IMPORT HINTS:" in prompt
         assert "DEPENDENCIES:" in prompt
         assert "helper" in prompt
         assert "test_normalize_username_<scenario>" in prompt
     finally:
         if repo_root.exists():
             shutil.rmtree(repo_root)
+
+
+def test_generate_tests_uses_retry_prompt_after_invalid_output(monkeypatch) -> None:
+    repo_root = Path(__file__).resolve().parents[2] / ".retry-prompt-workdir"
+    if repo_root.exists():
+        shutil.rmtree(repo_root)
+
+    try:
+        target = _build_sample_target(repo_root)
+        config = _build_test_config(repo_root)
+        invalid_output = (
+            "from missing_local_module import normalize_username\n\n"
+            "def test_normalize_username_valid():\n"
+            "    assert normalize_username(' User ') == 'user'\n\n"
+            "def test_normalize_username_none():\n"
+            "    try:\n"
+            "        normalize_username(None)\n"
+            "    except ValueError:\n"
+            "        assert True\n"
+            "    else:\n"
+            "        assert False\n\n"
+            "def test_normalize_username_empty():\n"
+            "    assert normalize_username('   ') is None\n"
+        )
+        valid_output = (
+            "from src.sample import normalize_username\n\n"
+            "def test_normalize_username_valid():\n"
+            "    assert normalize_username(' User ') == 'user'\n\n"
+            "def test_normalize_username_none():\n"
+            "    try:\n"
+            "        normalize_username(None)\n"
+            "    except ValueError:\n"
+            "        assert True\n"
+            "    else:\n"
+            "        assert False\n\n"
+            "def test_normalize_username_empty():\n"
+            "    assert normalize_username('   ') is None\n"
+        )
+        stub_client = _StubLLMClient([invalid_output, valid_output])
+
+        monkeypatch.setattr("generation.test_generator.LLMClient", lambda _config: stub_client)
+        monkeypatch.setattr("generation.test_generator.time.sleep", lambda _seconds: None)
+
+        result = generate_tests([target], config)
+
+        assert len(result.generated_tests) == 1
+        assert result.failures == []
+        assert len(stub_client.prompts) == 2
+        assert stub_client.prompts[0] != stub_client.prompts[1]
+        assert "CORRECTIONS (STRICT):" in stub_client.prompts[1]
+        assert "Previous failure reason: unknown_import." in stub_client.prompts[1]
+    finally:
+        if repo_root.exists():
+            shutil.rmtree(repo_root)
+
+
+def test_generate_tests_stops_early_on_duplicate_invalid_output(monkeypatch) -> None:
+    repo_root = Path(__file__).resolve().parents[2] / ".duplicate-output-workdir"
+    if repo_root.exists():
+        shutil.rmtree(repo_root)
+
+    try:
+        target = _build_sample_target(repo_root)
+        config = _build_test_config(repo_root)
+        invalid_output = (
+            "from src.sample import normalize_username\n\n"
+            "def test_normalize_username_placeholder():\n"
+            "    value = SignupRequest(..., ***)\n"
+        )
+        stub_client = _StubLLMClient([invalid_output, invalid_output, "unused third response"])
+
+        monkeypatch.setattr("generation.test_generator.LLMClient", lambda _config: stub_client)
+        monkeypatch.setattr("generation.test_generator.time.sleep", lambda _seconds: None)
+
+        result = generate_tests([target], config)
+
+        assert result.generated_tests == []
+        assert len(result.failures) == 1
+        assert result.failures[0].reason == "duplicate_output"
+        assert stub_client.calls == 2
+    finally:
+        if repo_root.exists():
+            shutil.rmtree(repo_root)
+
+
+def test_invalid_output_reason_detects_unknown_python_import() -> None:
+    repo_root = Path(__file__).resolve().parents[2] / ".unknown-import-workdir"
+    if repo_root.exists():
+        shutil.rmtree(repo_root)
+
+    try:
+        target = _build_sample_target(repo_root)
+        config = _build_test_config(repo_root)
+        content = (
+            "from made.up.module import normalize_username\n\n"
+            "def test_normalize_username_valid():\n"
+            "    assert normalize_username(' User ') == 'user'\n\n"
+            "def test_normalize_username_none():\n"
+            "    try:\n"
+            "        normalize_username(None)\n"
+            "    except ValueError:\n"
+            "        assert True\n"
+            "    else:\n"
+            "        assert False\n\n"
+            "def test_normalize_username_empty():\n"
+            "    assert normalize_username('   ') is None\n"
+        )
+
+        assert _invalid_output_reason(target, config, content) == "unknown_import"
+    finally:
+        if repo_root.exists():
+            shutil.rmtree(repo_root)
+
+
+def test_main_continues_when_generation_fails_and_flag_is_disabled(monkeypatch) -> None:
+    target = _build_memory_target()
+    _mock_main_generation_failure(monkeypatch, _build_test_config(Path.cwd(), fail_on_generation_failure=False), target)
+
+    assert agent_main.main() == 0
+
+
+def test_main_fails_when_generation_fails_and_flag_is_enabled(monkeypatch) -> None:
+    target = _build_memory_target()
+    _mock_main_generation_failure(monkeypatch, _build_test_config(Path.cwd(), fail_on_generation_failure=True), target)
+
+    assert agent_main.main() == 1
 
 
 def test_cosmetic_python_change_is_not_behavioral() -> None:
@@ -144,7 +273,7 @@ def test_collect_failed_generated_files_from_import_error() -> None:
         )
     ]
 
-    repair_targets = _build_repair_targets(
+    repair_targets = agent_main._build_repair_targets(
         [_build_memory_target()],
         {},
         results,
@@ -217,6 +346,61 @@ def test_existing_test_context_only_keeps_matching_tests() -> None:
     finally:
         if repo_root.exists():
             shutil.rmtree(repo_root)
+
+
+def _build_test_config(repo_root: Path, fail_on_generation_failure: bool = False) -> AgentConfig:
+    return AgentConfig(
+        repo_root=repo_root,
+        generated_tests_dir=repo_root / "tests" / "ai_generated",
+        llm_api_url="https://example.invalid/v1/chat/completions",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        fail_on_generation_failure=fail_on_generation_failure,
+    )
+
+
+class _StubLLMClient:
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.prompts: list[str] = []
+        self.calls = 0
+
+    def generate(self, prompt: str):
+        self.prompts.append(prompt)
+        self.calls += 1
+        content = self._responses.pop(0)
+        return types.SimpleNamespace(content=content, model="test-model")
+
+
+def _mock_main_generation_failure(monkeypatch, config: AgentConfig, target: GenerationTarget) -> None:
+    event_context = EventContext(
+        repository="owner/repo",
+        pull_request_number=1,
+        base_branch="main",
+        head_branch="feature",
+        commit_sha="abc123",
+        pull_request_title="Test",
+        pull_request_body="Body",
+    )
+    failure = GenerationFailure(
+        source_file=target.source_file,
+        function_name=target.function_change.function_name,
+        test_id=target.test_id,
+        generation_mode=target.generation_mode,
+        reason="unknown_import",
+        attempts=2,
+    )
+
+    monkeypatch.setattr(agent_main, "load_config", lambda: config)
+    monkeypatch.setattr(agent_main, "load_event_context", lambda: event_context)
+    monkeypatch.setattr(agent_main, "parse_project_context", lambda _raw: StructuredContext(rules=[]))
+    monkeypatch.setattr(agent_main, "extract_pr_context", lambda _event: StructuredContext(rules=[]))
+    monkeypatch.setattr(agent_main, "analyze_diff", lambda _repo_root, _base_branch: [])
+    monkeypatch.setattr(agent_main, "detect_languages", lambda _paths: {"python"})
+    monkeypatch.setattr(agent_main, "discover_existing_tests", lambda _repo_root: [])
+    monkeypatch.setattr(agent_main, "build_generation_context", lambda *args, **kwargs: GenerationContext(targets=[target], maintenance_actions=[]))
+    monkeypatch.setattr(agent_main, "generate_tests", lambda _targets, _config: GenerationResult(generated_tests=[], failures=[failure]))
+    monkeypatch.setattr(agent_main, "post_pr_comment", lambda *args, **kwargs: None)
 
 
 def _build_memory_target() -> GenerationTarget:
@@ -346,5 +530,3 @@ def test_extract_pr_context_returns_empty_for_vague_pr() -> None:
     )
 
     assert context.combined_rules() == []
-
-

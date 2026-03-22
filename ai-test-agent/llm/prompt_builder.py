@@ -1,6 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
 
 from agent.config import test_framework_for_language
 from context.dependency_resolver import DependencyContext
@@ -22,9 +24,10 @@ class LLMInput:
     project_rules: list[str]
     pr_rules: list[str]
     existing_tests: str
+    import_hints: list[str]
 
 
-def build_llm_input(target: GenerationTarget) -> LLMInput:
+def build_llm_input(target: GenerationTarget, generated_tests_dir: Path | str = Path("tests/ai_generated")) -> LLMInput:
     dependency_entries = [_dependency_entry(dependency) for dependency in target.dependencies]
     project_rules, pr_rules = _fit_context_rules(target.project_rules, target.pr_rules)
     existing_tests = _fit_existing_tests(_build_existing_tests_reference(target))
@@ -38,20 +41,22 @@ def build_llm_input(target: GenerationTarget) -> LLMInput:
         project_rules=project_rules,
         pr_rules=pr_rules,
         existing_tests=existing_tests,
+        import_hints=_build_import_hints(target, Path(generated_tests_dir)),
     )
     return _fit_llm_input_to_budget(llm_input, dependency_entries)
 
 
 def build_prompt(llm_input: LLMInput) -> str:
-    project_context = "\n".join(f"- {rule}" for rule in llm_input.project_rules) or "- None"
-    pr_context = "\n".join(f"- {rule}" for rule in llm_input.pr_rules) or "- None"
+    project_context = "\n".join(f"- {r}" for r in llm_input.project_rules) or "- None"
+    pr_context = "\n".join(f"- {r}" for r in llm_input.pr_rules) or "- None"
     dependencies = "\n\n".join(llm_input.dependencies) or "- None"
+    import_hints = "\n".join(f"- {h}" for h in llm_input.import_hints) or "- None"
     existing_tests = llm_input.existing_tests.strip() or "None"
 
     is_repair = "Repair only these failing tests:" in existing_tests
 
     if not is_repair:
-        instructions = f"Generate 3 to 6 HIGH QUALITY tests for {llm_input.function_name}."
+        instructions = f"Generate 3 to 7 high quality unit tests for {llm_input.function_name}."
     else:
         instructions = "Fix ONLY failing tests. Keep same names."
 
@@ -59,14 +64,25 @@ def build_prompt(llm_input: LLMInput) -> str:
         f"LANGUAGE: {llm_input.language}\n"
         f"TEST FRAMEWORK: {llm_input.test_framework}\n\n"
 
+        "CRITICAL RULES (MUST FOLLOW):\n"
+        "- Use ONLY real imports from given code or dependencies\n"
+        "- NEVER use 'your_module' while importing\n"
+        "- NEVER use placeholders like ***, ..., ???,etc\n"
+        "- ALWAYS provide complete function/class arguments\n"
+        "- If unsure, use valid dummy values (e.g. strings, numbers)\n"
+        "- DO NOT redefine classes already provided\n\n"
+
         "PROJECT CONTEXT:\n"
         f"{project_context}\n\n"
 
         "PR CONTEXT:\n"
         f"{pr_context}\n\n"
 
-        "FUNCTION UNDER TEST:\n"
+        "FUNCTION:\n"
         f"{llm_input.primary_code_block}\n\n"
+
+        "IMPORT HINTS:\n"
+        f"{import_hints}\n\n"
 
         "DEPENDENCIES:\n"
         f"{dependencies}\n\n"
@@ -74,82 +90,67 @@ def build_prompt(llm_input: LLMInput) -> str:
         "EXISTING TESTS:\n"
         f"{existing_tests}\n\n"
 
-        # ================= STEP 1 =================
-        "STEP 1: CLASSIFY FUNCTION TYPE\n"
-        "- PURE (no side effects)\n"
-        "- SIDE EFFECT (DB/API/file/external)\n"
-        "- VALIDATION\n"
-        "- CONTROLLER/ROUTE\n\n"
+        "INSTRUCTIONS:\n"
+        f"{instructions}\n"
+        "- Cover valid, edge, and error cases\n"
+        "- Use real class constructors from schema\n"
+        "- Example valid object:\n"
+        "  SignupRequest(username='user', email='a@b.com', password='validpass123')\n\n"
 
-        # ================= STEP 2 =================
-        "STEP 2: EXTRACT BEHAVIOR (STRICT)\n"
-        "- Use ONLY explicitly visible logic\n"
-        "- Identify inputs, conditions, returns\n"
-        "- DO NOT assume missing logic\n"
-        "- DO NOT combine multiple errors unless code does it\n\n"
+        "MOCKING:\n"
+        "- Mock external dependencies only (DB, API)\n"
+        "- Do NOT mock internal logic\n\n"
 
-        # ================= STEP 3 =================
-        "STEP 3: BUILD INPUTS\n"
-        "- Use ONLY visible schema/classes\n"
-        "- If class exists → MUST use it\n"
-        "- NEVER use *** or placeholders\n"
-        "- NEVER invent fields\n"
-        "- If a required value is unclear → use a reasonable valid dummy value that matches visible types\n"
-        "- NEVER leave constructor or function arguments incomplete\n"
-        "- If required structure is missing entirely → SKIP that test\n\n"
+        "OUTPUT:\n"
+        "- Only executable test code\n"
+        "- No markdown\n"
+        "- No explanation\n"
+    )
 
-        # ================= STEP 4 =================
-        "STEP 4: GENERATE TESTS\n"
-        f"{instructions}\n\n"
 
-        # ================= IMPORT RULES =================
-        "IMPORT RULES (CRITICAL):\n"
-        "- Reuse imports EXACTLY from provided code or dependencies\n"
-        "- If relative import exists (e.g., from .schemas import X), reuse it\n"
-        "- Infer module path from file structure if needed\n"
-        "- NEVER use 'your_module'\n"
-        "- NEVER redefine classes or functions already provided\n"
-        "- If class (e.g., SignupRequest) exists → IMPORT it, DO NOT recreate\n\n"
+def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number: int) -> str:
+    dependencies = "\n\n".join(llm_input.dependencies) or "- None"
+    import_hints = "\n".join(f"- {hint}" for hint in llm_input.import_hints) or "- None"
+    existing_tests = llm_input.existing_tests.strip() or "None"
+    condensed_rules = _retry_rules(llm_input)
+    correction_lines = [
+        "- Previous output was invalid or incomplete.",
+        f"- Previous failure reason: {failure_reason}.",
+        "- NEVER use 'your_module' or any made-up local module.",
+        "- ONLY import from visible code, dependency snippets, import hints, or known test framework modules.",
+        "- NEVER use placeholders such as ***, ..., ???, TODO, or TBD.",
+        "- Every constructor and function call must have complete arguments.",
+        "- If a value is required, use a realistic dummy value instead of omitting it.",
+        "- Output complete executable tests only.",
+    ]
+    if attempt_number >= 5:
+        correction_lines.extend(
+            [
+                "- If unsure about imports, infer them from the source file path or import hints.",
+                "- Prefer smaller, correct tests over broad but invalid coverage.",
+                "- Do not repeat a previous invalid structure.",
+            ]
+        )
 
-        # ================= MOCKING =================
-        "MOCKING RULES (CONDITIONAL):\n"
-        "- PURE → NO mocking\n"
-        "- SIDE EFFECT → mock external dependencies ONLY\n"
-        "- CONTROLLER → mock dependencies, not internal logic\n"
-
-        "Python:\n"
-        "- unittest.mock (MagicMock, patch)\n"
-        "- pytest monkeypatch\n"
-
-        "JS/TS:\n"
-        "- jest.fn(), jest.mock(), vi.fn()\n"
-
-        "Constraints:\n"
-        "- Mock ONLY functions actually called\n"
-        "- If commit() exists → mock commit(), not add()\n"
-        "- If rollback() exists → assert rollback()\n"
-        "- DO NOT mock non-existent functions\n"
-        "- DO NOT create real DB/API/filesystem\n\n"
-
-        # ================= SPECIAL CASE =================
-        "GENERATOR RULE:\n"
-        "- If function uses 'yield', test using next(generator)\n\n"
-
-        # ================= ASSERTIONS =================
-        "ASSERTION RULES:\n"
-        "- Match EXACT return values\n"
-        "- DO NOT assume structure not in code\n"
-        "- DO NOT invent outputs\n\n"
-
-        # ================= HARD CONSTRAINTS =================
-        "STRICT PROHIBITIONS:\n"
-        "- DO NOT redefine source code\n"
-        "- DO NOT copy source into tests\n"
-        "- DO NOT invent behavior\n"
-        "- DO NOT invent exceptions\n"
-        "- DO NOT generate placeholder values\n\n"
-
-        # ================= OUTPUT =================
+    corrections = "\n".join(correction_lines)
+    return (
+        f"LANGUAGE: {llm_input.language}\n"
+        f"TEST FRAMEWORK: {llm_input.test_framework}\n\n"
+        "FUNCTION:\n"
+        f"{llm_input.primary_code_block}\n\n"
+        "IMPORT HINTS:\n"
+        f"{import_hints}\n\n"
+        "DEPENDENCIES:\n"
+        f"{dependencies}\n\n"
+        "EXISTING TESTS:\n"
+        f"{existing_tests}\n\n"
+        "KEEP THESE RULES:\n"
+        f"{condensed_rules}\n\n"
+        "TEST NAMING:\n"
+        f"- Use names like test_{llm_input.function_name}_<scenario>\n"
+        "- In repair mode, keep the same failing test names\n\n"
+        "CORRECTIONS (STRICT):\n"
+        f"{corrections}\n\n"
         "OUTPUT:\n"
         "- ONLY executable code\n"
         "- NO markdown\n"
@@ -173,6 +174,46 @@ def _build_existing_tests_reference(target: GenerationTarget) -> str:
         lines.append("Existing tests:")
         lines.append(target.existing_tests_text.strip())
     return "\n".join(lines).strip()
+
+
+def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> list[str]:
+    if target.language == "python":
+        module_path = _python_module_path(target.source_file)
+        symbol_name = target.function_change.enclosing_class_name or target.function_change.function_name.split(".")[0]
+        hints = [f"Source file: {target.source_file}"]
+        if module_path:
+            hints.append(f"Module path for imports: {module_path}")
+            hints.append(f"Prefer imports like: from {module_path} import {symbol_name}")
+        return hints
+
+    source_no_suffix = PurePosixPath(target.source_file).with_suffix("")
+    generated_dir = PurePosixPath(generated_tests_dir.as_posix())
+    relative_import = posixpath.relpath(source_no_suffix.as_posix(), generated_dir.as_posix())
+    if not relative_import.startswith("."):
+        relative_import = f"./{relative_import}"
+    symbol_name = target.function_change.enclosing_class_name or target.function_change.function_name.split(".")[0]
+    return [
+        f"Source file: {target.source_file}",
+        f"Relative import from generated tests: {relative_import}",
+        f"Prefer imports from '{relative_import}' for {symbol_name}",
+    ]
+
+
+def _python_module_path(source_file: str) -> str:
+    path = PurePosixPath(source_file)
+    if path.suffix != ".py":
+        return ""
+    parts = list(path.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _retry_rules(llm_input: LLMInput) -> str:
+    rules: list[str] = []
+    rules.extend(f"- {rule}" for rule in llm_input.project_rules[:3])
+    rules.extend(f"- {rule}" for rule in llm_input.pr_rules[:3])
+    return "\n".join(rules) or "- None"
 
 
 def _dependency_entry(dependency: DependencyContext) -> dict[str, str]:
