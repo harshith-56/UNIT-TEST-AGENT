@@ -52,15 +52,13 @@ def build_prompt(llm_input: LLMInput) -> str:
 
     if not is_repair:
         instructions = (
-            f"- Generate between 3 and 8 test functions for {llm_input.function_name}.\n"
-            "- Each test must cover a UNIQUE scenario.\n"
-            f"- Naming format: test_{llm_input.function_name}_<scenario>\n"
-            "- ONLY test behaviors explicitly visible in the function.\n"
+            f"Generate 3 to 8 HIGH QUALITY test functions for {llm_input.function_name}.\n"
+            f"Naming: test_{llm_input.function_name}_<scenario>\n"
         )
     else:
         instructions = (
-            "- Regenerate ONLY the failing tests listed below.\n"
-            "- Keep EXACT same test names.\n"
+            "Regenerate ONLY failing tests.\n"
+            "Keep EXACT same names.\n"
         )
 
     return (
@@ -76,70 +74,95 @@ def build_prompt(llm_input: LLMInput) -> str:
         "FUNCTION UNDER TEST:\n"
         f"{llm_input.primary_code_block}\n\n"
 
-        "DEPENDENCIES (ONLY USE IF NECESSARY):\n"
+        "DEPENDENCIES:\n"
         f"{dependencies}\n\n"
 
-        "EXISTING TESTS (REFERENCE ONLY):\n"
+        "EXISTING TESTS:\n"
         f"{existing_tests}\n\n"
 
-        "STRICT INSTRUCTIONS:\n"
+        # ================== STEP 1 ==================
+        "STEP 1 - ANALYZE FUNCTION TYPE (MANDATORY):\n"
+        "Classify the function into ONE of the following:\n"
+        "- PURE FUNCTION (no side effects)\n"
+        "- SIDE EFFECT FUNCTION (DB, API, file, external calls)\n"
+        "- VALIDATION FUNCTION (input checks, conditions)\n"
+        "- CONTROLLER / ROUTE (combines multiple components)\n\n"
+
+        # ================== STEP 2 ==================
+        "STEP 2 - EXTRACT BEHAVIOR:\n"
+        "- Identify ONLY explicit behaviors from code\n"
+        "- Inputs\n"
+        "- Conditions\n"
+        "- Return values\n"
+        "- Errors explicitly present\n"
+        "- If behavior is not visible → DO NOT TEST IT\n\n"
+
+        # ================== STEP 3 ==================
+        "STEP 3 - GENERATE TESTS:\n"
         f"{instructions}"
 
-        # ---------------- CORE RULES ----------------
-        "- ONLY use behavior explicitly visible in the provided code.\n"
-        "- DO NOT assume behavior, return structure, or hidden logic.\n"
-        "- DO NOT invent attributes, responses, or exceptions.\n"
-        "- DO NOT redefine the function or dependencies.\n"
+        # ================== CORE RULES ==================
+        "CRITICAL RULES:\n"
+        "- DO NOT assume hidden logic\n"
+        "- DO NOT invent behaviors\n"
+        "- DO NOT combine multiple errors unless code does it\n"
+        "- DO NOT introduce new flows\n"
 
-        # ---------------- ANTI-HALLUCINATION ----------------
-        "- DO NOT use placeholders like '***'.\n"
-        "- DO NOT use fake imports like 'your_module'.\n"
-        "- DO NOT generate code with undefined variables.\n"
+        # ================== INPUT RULES ==================
+        "INPUT RULES:\n"
+        "- Construct inputs ONLY using visible schema\n"
+        "- NEVER use *** or placeholders\n"
+        "- NEVER invent fields or arguments\n"
+        "- If schema unclear → SKIP test\n"
 
-        # ---------------- MOCKING (LANGUAGE AWARE) ----------------
-        "MOCKING RULES:\n"
-        "- If function interacts with external systems (DB, API, filesystem):\n"
-        "  → MUST use mocking.\n"
+        # ================== IMPORT RULES ==================
+        "IMPORT RULES:\n"
+        "- DO NOT use 'your_module'\n"
+        "- DO NOT guess import paths\n"
+        "- ONLY import from visible code context\n"
 
+        # ================== MOCKING ==================
+        "MOCKING RULES (CONDITIONAL):\n"
+        "- PURE FUNCTION → NO mocking\n"
+        "- SIDE EFFECT FUNCTION → USE mocking\n"
+        "- CONTROLLER → mock dependencies only\n"
+
+        "Language specific:\n"
         "Python:\n"
-        "- Use unittest.mock (MagicMock, patch)\n"
-        "- Or pytest monkeypatch\n"
+        "- unittest.mock (MagicMock, patch)\n"
+        "- pytest monkeypatch\n"
 
         "JavaScript / TypeScript:\n"
-        "- Use jest.fn(), jest.mock()\n"
-        "- Or vi.fn() (Vitest)\n"
+        "- jest.fn(), jest.mock()\n"
+        "- vi.fn()\n"
 
         "Mocking constraints:\n"
-        "- Simulate success and failure scenarios\n"
-        "- Use side_effect / mockImplementation for errors\n"
-        "- Verify interactions (calls, arguments, counts)\n"
+        "- Mock ONLY what is explicitly used\n"
+        "- Simulate success and failure\n"
+        "- Use side_effect / mockImplementation\n"
+        "- Verify calls (assert_called_once / toHaveBeenCalled)\n"
 
         "DO NOT:\n"
-        "- create real database connections\n"
-        "- call create_engine or real DB clients\n"
-        "- call real APIs or network\n"
-        "- use filesystem\n"
+        "- create real DB, API, or filesystem\n"
+        "- mock non-existent functions\n"
 
-        # ---------------- LANGUAGE RULE ----------------
-        "LANGUAGE RULES:\n"
-        "- Use idiomatic syntax of the given language\n"
-        "- Python → pytest style (assert)\n"
-        "- JS/TS → jest/vi (test(), expect())\n"
-        "- DO NOT mix frameworks across languages\n"
+        # ================== ASSERTION ==================
+        "ASSERTION RULES:\n"
+        "- Match EXACT return values\n"
+        "- DO NOT assume object structure\n"
+        "- DO NOT assert unknown properties\n"
 
-        # ---------------- ASSERTION RULES ----------------
-        "- Assertions must match actual return values from code\n"
-        "- Avoid comparing complex objects unless explicitly defined\n"
-        "- Prefer primitive inputs unless schema is clearly defined\n"
+        # ================== QUALITY ==================
+        "QUALITY RULES:\n"
+        "- NO redundant tests\n"
+        "- Cover distinct logic branches only\n"
+        "- Prefer correctness over quantity\n"
 
-        # ---------------- SAFETY ----------------
-        "- If behavior is unclear → SKIP that test case\n"
-        "- Do not over-test or create unrealistic scenarios\n"
-
-        "\nOUTPUT RULES:\n"
+        # ================== OUTPUT ==================
+        "\nOUTPUT:\n"
         "- ONLY executable code\n"
         "- NO markdown\n"
-        "- NO explanations\n"
+        "- NO explanation\n"
         "- NO comments\n"
     )
 
@@ -177,15 +200,6 @@ def _fit_context_rules(project_rules: list[str], pr_rules: list[str]) -> tuple[l
 
     trimmed_project = trim_rules_to_budget(project_rules, project_budget)
     trimmed_pr = trim_rules_to_budget(pr_rules, pr_budget)
-
-    leftover = MAX_CONTEXT_TOKENS - estimate_tokens("\n".join([*trimmed_project, *trimmed_pr]))
-
-    if leftover > 0:
-        trimmed_project = [*trimmed_project, *trim_rules_to_budget(project_rules[len(trimmed_project):], leftover)]
-        leftover = MAX_CONTEXT_TOKENS - estimate_tokens("\n".join([*trimmed_project, *trimmed_pr]))
-
-    if leftover > 0:
-        trimmed_pr = [*trimmed_pr, *trim_rules_to_budget(pr_rules[len(trimmed_pr):], leftover)]
 
     return trimmed_project, trimmed_pr
 
