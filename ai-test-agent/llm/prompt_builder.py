@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
@@ -94,7 +94,9 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- If class exists → MUST use it\n"
         "- NEVER use *** or placeholders\n"
         "- NEVER invent fields\n"
-        "- If unclear → SKIP that test\n\n"
+        "- If a required value is unclear → use a reasonable valid dummy value that matches visible types\n"
+        "- NEVER leave constructor or function arguments incomplete\n"
+        "- If required structure is missing entirely → SKIP that test\n\n"
 
         # ================= STEP 4 =================
         "STEP 4: GENERATE TESTS\n"
