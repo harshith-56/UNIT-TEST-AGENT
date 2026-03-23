@@ -26,12 +26,6 @@ BANNED_OUTPUT_PATTERNS = (
     re.compile(r"\b(?:sqlite3|psycopg|psycopg2)\.connect\s*\("),
     re.compile(r"\bopen\s*\([^\n,]+,\s*['\"](?:w|a|x)"),
     re.compile(r"\b(?:Path|pathlib\.Path)\([^\n]*\)\.(?:write_text|write_bytes|open)\s*\("),
-    # Bans imports from ALL_CAPS_REPO_NAME style paths (GitHub repo names, never real packages)
-    # e.g. from ECOMMERCE_UNIT_TEST_AGENT_TESTING.backend import X
-    re.compile(r"(?:from|import)\s+[A-Z][A-Z0-9_]{9,}(?:\s*\.|import)"),
-    # Bans JS/TS imports with ALL_CAPS directory segments in path
-    # e.g. import X from '../../ECOMMERCE_UNIT_TEST_AGENT_TESTING/...'
-    re.compile(r"""(?:from|import|require)\s*\(?['"][^'"]*[A-Z][A-Z0-9_]{9,}[^'"]*['"]"""),
 )
 
 

@@ -89,6 +89,11 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
 
             cleaned = _strip_code_fences(response.content)
 
+            fixed = _fix_import_paths(cleaned, target)
+            if fixed != cleaned:
+                LOGGER.info(f"[IMPORT_FIXED][{target.test_id}] Fixed hallucinated import paths")
+            cleaned = fixed
+
             LOGGER.debug(f"[CLEANED_FULL][{target.test_id}]:\n{cleaned}")
             LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned[:800]}")
 
@@ -157,6 +162,80 @@ def _strip_code_fences(content: str) -> str:
             continue  # skip opening ```python, ```js, closing ``` etc
         cleaned.append(line)
     return "\n".join(cleaned).strip()
+
+
+def _fix_import_paths(content: str, target) -> str:
+    """
+    Post-process generated code to fix hallucinated import paths.
+
+    The LLM often constructs import paths using the GitHub repo name
+    as a top-level package (e.g. ECOMMERCE_UNIT_TEST_AGENT_TESTING.backend.main)
+    instead of the real importable path (e.g. backend.main).
+
+    This function detects and removes such prefixes.
+    """
+    import posixpath
+    from pathlib import PurePosixPath
+
+    source_file = target.source_file.replace("\\", "/")
+
+    if target.language == "python":
+        parts = PurePosixPath(source_file).with_suffix("").parts
+        if not parts:
+            return content
+
+        real_top = parts[0]
+
+        lines = content.splitlines()
+        fixed_lines = []
+        for line in lines:
+            match = re.match(
+                rf"^(from|import)\s+([A-Za-z][A-Za-z0-9_]{{4,}})\.({re.escape(real_top)}(?:\.\S+)?)(.*)",
+                line,
+            )
+            if match:
+                keyword = match.group(1)
+                prefix = match.group(2)
+                real_path = match.group(3)
+                rest = match.group(4)
+                if "_" in prefix or prefix.isupper() or prefix[0].isupper():
+                    line = f"{keyword} {real_path}{rest}"
+            fixed_lines.append(line)
+
+        return "\n".join(fixed_lines)
+
+    if target.language in ("javascript", "typescript"):
+        source_no_ext = PurePosixPath(source_file).with_suffix("")
+        generated_dir = "tests/ai_generated"
+        real_relative = posixpath.relpath(source_no_ext.as_posix(), generated_dir)
+        if not real_relative.startswith("."):
+            real_relative = "./" + real_relative
+
+        real_name = PurePosixPath(source_file).stem
+
+        lines = content.splitlines()
+        fixed_lines = []
+        for line in lines:
+            match = re.search(
+                r"""(['"])([^'"]*[A-Z][A-Z0-9_]{9,}[^'"]*)(['"])""",
+                line,
+            )
+            if match:
+                full_path = match.group(2)
+                after_caps = re.sub(r"[A-Z][A-Z0-9_]{9,}/", "", full_path)
+                if real_name.lower() in after_caps.lower():
+                    line = line[: match.start(2)] + real_relative + line[match.end(2) :]
+                else:
+                    after_caps = after_caps.lstrip("/")
+                    rel = posixpath.relpath(after_caps, generated_dir)
+                    if not rel.startswith("."):
+                        rel = "./" + rel
+                    line = line[: match.start(2)] + rel + line[match.end(2) :]
+            fixed_lines.append(line)
+
+        return "\n".join(fixed_lines)
+
+    return content
 
 
 def _is_truncated(content: str, language: str) -> bool:

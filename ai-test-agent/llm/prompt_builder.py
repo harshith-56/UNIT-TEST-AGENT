@@ -116,7 +116,6 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- You MUST import ONLY from the module paths listed above\n"
         "- NEVER invent module paths not listed above\n"
         "- NEVER use the repository or project name as a package prefix\n"
-        "- NEVER import from modules ending in: utils, helpers, database, "
         "constants, config unless explicitly listed above\n"
         "- If a symbol is not importable from the listed paths, do NOT import it\n"
         "- For Python: use exactly the module path shown (e.g. 'backend.main')\n"
