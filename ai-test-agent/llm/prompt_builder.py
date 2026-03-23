@@ -47,6 +47,99 @@ def build_llm_input(target: GenerationTarget, generated_tests_dir: Path | str = 
     return _fit_llm_input_to_budget(llm_input, dependency_entries)
 
 
+def _detect_external_calls(source_code: str) -> list[str]:
+    hints = []
+    seen = set()
+
+    # Collect names created locally inside the function body
+    # (assigned with = , so they are not external)
+    local_names = set(re.findall(
+        r"^\s{4,}(\w+)\s*=",
+        source_code,
+        re.MULTILINE,
+    ))
+
+    # Rule 1: obj.method() calls where obj was not created locally
+    # These are external objects — passed in, global, or module-level
+    # Must be mocked regardless of what framework or library they are
+    for obj, method in re.findall(r"\b(\w+)\.(\w+)\s*\(", source_code):
+        key = f"{obj}.{method}"
+        if key in seen:
+            continue
+        if obj in local_names:
+            continue
+        # Skip language built-ins and standard library names
+        if obj in {
+            "self", "cls", "str", "int", "float", "bool",
+            "list", "dict", "set", "tuple", "type",
+            "re", "os", "sys", "math", "json", "time",
+            "datetime", "timedelta", "pathlib", "Path",
+            "console", "Math", "JSON", "Object", "Array",
+            "Promise", "Error", "String", "Number",
+        }:
+            continue
+        seen.add(key)
+        hints.append(
+            f"calls {obj}.{method}() — '{obj}' is external to this "
+            f"function and must be mocked in tests, not called for real"
+        )
+
+    # Rule 2: reads or writes to subscript variables not created locally
+    # e.g. _cache[key] = value, store[id], sessions[token]
+    # These are module-level or closure state — must be patched
+    for name in re.findall(r"\b(\w+)\s*\[", source_code):
+        key = f"subscript:{name}"
+        if key in seen:
+            continue
+        if name in local_names:
+            continue
+        if name in {"self", "cls"}:
+            continue
+        seen.add(key)
+        hints.append(
+            f"accesses '{name}[...]' — '{name}' is external state "
+            f"(module-level or closure). Must be patched in tests, "
+            f"not assigned directly as a local variable"
+        )
+
+    # Rule 3: parameters with non-trivial default values in the signature
+    # e.g. def f(x: Type = SomeClass()) or def f(x = someFunction())
+    # These defaults are framework/container injection — they do nothing
+    # in a plain test environment. The parameter must be passed directly.
+    first_line = (
+        source_code.strip().splitlines()[0]
+        if source_code.strip() else ""
+    )
+    for param, default in re.findall(
+        r"(\w+)\s*(?::\s*[\w\[\]| ,]+)?\s*=\s*([A-Z]\w*)\s*\(",
+        first_line,
+    ):
+        hints.append(
+            f"parameter '{param}' has default value {default}(...) — "
+            f"this default only runs inside a framework request context. "
+            f"In tests you must create a mock and pass it directly: "
+            f"{param} = MagicMock()"
+        )
+
+    return hints
+
+
+def _build_mock_hints_section(source_code: str) -> str:
+    hints = _detect_external_calls(source_code)
+    if not hints:
+        return ""
+    return (
+        "====================\n"
+        "WHAT NEEDS MOCKING IN THIS FUNCTION\n"
+        "====================\n"
+        "The following external dependencies were detected.\n"
+        "You MUST mock ALL of them in every test.\n"
+        "Do not call the real versions.\n"
+        + "".join(f"- {h}\n" for h in hints)
+        + "\n"
+    )
+
+
 def build_prompt(llm_input: LLMInput) -> str:
     dependencies = "\n\n".join(llm_input.dependencies) or "- None"
     import_hints = "\n".join(f"- {hint}" for hint in llm_input.import_hints) or "- None"
@@ -61,29 +154,6 @@ def build_prompt(llm_input: LLMInput) -> str:
         instructions = f"Generate 3 to 9 production-grade unit tests for {llm_input.function_name}."
     else:
         instructions = "Fix ONLY failing tests. Keep EXACT same names."
-
-    # Check if function uses module-level state (needs patch hint)
-    needs_patch_hint = bool(re.search(
-        r"\b_\w+\s*[\[\.]|del\s+_\w+",
-        llm_input.primary_code_block
-    ))
-    patch_hint = ""
-    if needs_patch_hint:
-        # Extract module path from first import hint
-        module_hint = ""
-        for hint in llm_input.import_hints:
-            if "Module path" in hint or "from " in hint:
-                import re as _re
-                m = _re.search(r"from ([\w.]+) import", hint)
-                if m:
-                    module_hint = m.group(1)
-                    break
-        if module_hint:
-            patch_hint = (
-                f"\nPATCH HINT: This function uses module-level state.\n"
-                f"To patch it in tests use: "
-                f"patch('{module_hint}._variable_name', replacement_value)\n"
-            )
 
     return (
         "You are an EXPERT production-grade UNIT TEST generator.\n"
@@ -130,15 +200,16 @@ def build_prompt(llm_input: LLMInput) -> str:
         "FUNCTION UNDER TEST\n"
         "====================\n"
         f"{llm_input.primary_code_block}\n\n"
-
+        + _build_mock_hints_section(llm_input.primary_code_block)
+        +
         "====================\n"
         "IMPORT HINTS (MANDATORY — USE ONLY THESE)\n"
         "====================\n"
-        f"{import_hints}{patch_hint}\n\n"
+        f"{import_hints}\n\n"
         "IMPORT RULES:\n"
         "- You MUST import ONLY from the module paths listed above\n"
         "- NEVER invent module paths not listed above\n"
-        "- NEVER use the repository or project name as a package prefix\n"
+        "- NEVER import from modules like utils, helpers, constants, or config unless explicitly listed in import hints above\n"
         "constants, config unless explicitly listed above\n"
         "- If a symbol is not importable from the listed paths, do NOT import it\n"
         "- For Python: use exactly the module path shown (e.g. 'backend.main')\n"
@@ -340,20 +411,6 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
     return base + correction
 
 
-def _prompt_rules(llm_input: LLMInput) -> str:
-    project_rules = "\n".join(f"- {rule}" for rule in llm_input.project_rules[:3]) or "- None"
-    pr_rules = "\n".join(f"- {rule}" for rule in llm_input.pr_rules[:3]) or "- None"
-    return (
-        "- Generate UNIT tests only; mock side effects instead of using real DB engines, network calls, or file writes.\n"
-        "- Ban placeholders such as ***, ..., ???, TODO, and TBD.\n"
-        "- Never use 'your_module'.\n"
-        "- Use complete constructor and function arguments.\n"
-        "- Use real imports from the code, dependencies, or import hints.\n"
-        "- If the function uses yield, treat it as a generator and test it via iteration, for example list(function_call()).\n"
-        f"{project_rules}\n"
-        f"{pr_rules}"
-    )
-
 
 def _build_existing_tests_reference(target: GenerationTarget) -> str:
     if target.generation_mode != "repair":
@@ -385,21 +442,6 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
             else:
                 hints.append(f"Import the function: from {module_path} import {func_name}")
             hints.append(f"Only import from '{module_path}' — do NOT invent other module paths")
-        # Add hints for sibling modules in same package
-        source_path = PurePosixPath(target.source_file.replace("\\", "/"))
-        package_parts = list(source_path.parent.parts)
-        if package_parts:
-            package = ".".join(package_parts)
-            hints.append(
-                f"Other importable modules in same package: {package}.schemas, "
-                f"{package}.models, {package}.db, {package}.dependencies"
-            )
-            hints.append(
-                f"For request/response types: from {package}.schemas import SignupRequest, SignupResponse"
-            )
-            hints.append(
-                f"For DB models: from {package}.models import User"
-            )
         return hints
 
     # Normalize source_file to a relative path (strip absolute prefix / drive letter)
