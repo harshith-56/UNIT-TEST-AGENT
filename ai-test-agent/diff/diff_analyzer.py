@@ -345,6 +345,15 @@ def _should_skip_generation(function: ParsedFunction) -> bool:
     if has_external_side_effects:
         return False  # always generate tests for stateful functions
 
+    # Never skip UI components — they always need render tests
+    # Detection: JS/TS function that contains JSX return patterns
+    _jsx_signal = re.search(
+        r"return\s*[\(<]|=>\s*[\(<]|<[A-Z][a-zA-Z]+|</[a-zA-Z]",
+        function.source_code,
+    )
+    if _jsx_signal:
+        return False  # always generate tests for UI components
+
     # For pure functions: skip if small and simple
     return (
         len(meaningful_lines) < 10

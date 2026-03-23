@@ -124,6 +124,79 @@ def _detect_external_calls(source_code: str) -> list[str]:
     return hints
 
 
+def _detect_ui_component(source_code: str, language: str) -> str:
+    """
+    Detect if the function under test is a UI component.
+    Returns a non-empty string with testing guidance if it is,
+    empty string if it is not.
+
+    A UI component is any function that:
+    - Returns JSX/TSX (contains <, />, or JSX-like syntax in return)
+    - Is a React/Vue/Svelte/Angular component function
+
+    These cannot be tested by calling them directly — they must
+    be rendered through the framework's testing utilities.
+    """
+    if language not in ("javascript", "typescript"):
+        return ""
+
+    # Detect JSX/TSX return — the universal signal of a UI component
+    # regardless of which framework (React, Vue, Svelte, etc.)
+    jsx_patterns = [
+        r"return\s*\(",          # return ( — multiline JSX
+        r"return\s*<",           # return < — inline JSX
+        r"=>\s*<",               # => < — arrow function returning JSX
+        r"=>\s*\(",              # => ( — arrow function with parens
+        r"<[A-Z][a-zA-Z]+",     # <ComponentName — JSX component tag
+        r"<[a-z]+\s+[a-z]+=",  # <div className= or <input type=
+        r"</[a-zA-Z]",           # closing JSX tag
+    ]
+
+    is_component = any(
+        re.search(p, source_code)
+        for p in jsx_patterns
+    )
+
+    if not is_component:
+        return ""
+
+    return (
+        "====================\n"
+        "UI COMPONENT DETECTED\n"
+        "====================\n"
+        "This function returns UI markup (JSX/TSX). It is a UI component.\n"
+        "UI components CANNOT be tested by calling them directly.\n\n"
+        "CORRECT approach — use the framework's render utility:\n\n"
+        "  import { render, screen, fireEvent, waitFor } "
+        "from '@testing-library/react'\n\n"
+        "  it('renders correctly', () => {\n"
+        "    render(<ComponentName />)\n"
+        "    expect(screen.getByText('expected text')).toBeInTheDocument()\n"
+        "  })\n\n"
+        "  it('handles user interaction', async () => {\n"
+        "    render(<ComponentName />)\n"
+        "    fireEvent.change(screen.getByPlaceholderText('Username'), {\n"
+        "      target: { value: 'testuser' },\n"
+        "    })\n"
+        "    fireEvent.click(screen.getByRole('button'))\n"
+        "    await waitFor(() =>\n"
+        "      expect(screen.getByText('success')).toBeInTheDocument()\n"
+        "    )\n"
+        "  })\n\n"
+        "WRONG patterns — never do these:\n"
+        "  const result = ComponentName({ props })           "
+        "← calling component as plain function\n"
+        "  const result = ComponentName({ props }, event)    "
+        "← same mistake\n"
+        "  result.handleSubmit(event)                        "
+        "← component returns JSX, not methods\n\n"
+        "For mocking API calls inside the component:\n"
+        "  jest.mock('./path/to/api')\n"
+        "  import { myApiFunction } from './path/to/api'\n"
+        "  jest.mocked(myApiFunction).mockResolvedValue({ success: true })\n\n"
+    )
+
+
 def _build_mock_hints_section(source_code: str) -> str:
     hints = _detect_external_calls(source_code)
     if not hints:
@@ -200,6 +273,9 @@ def build_prompt(llm_input: LLMInput) -> str:
         "FUNCTION UNDER TEST\n"
         "====================\n"
         f"{llm_input.primary_code_block}\n\n"
+        + _detect_ui_component(
+            llm_input.primary_code_block, llm_input.language
+        )
         + _build_mock_hints_section(llm_input.primary_code_block)
         +
         "====================\n"
