@@ -109,19 +109,18 @@ def build_prompt(llm_input: LLMInput) -> str:
         f"{llm_input.primary_code_block}\n\n"
 
         "====================\n"
-        "IMPORT HINTS\n"
+        "IMPORT HINTS (MANDATORY — USE ONLY THESE)\n"
         "====================\n"
         f"{import_hints}\n\n"
-
-        "====================\n"
-        "IMPORT PATH RULES (CRITICAL)\n"
-        "====================\n"
-        "- Import paths MUST be relative (starting with ./ or ../)\n"
-        "- NEVER use the repository name in any import path\n"
-        "- NEVER use absolute paths in imports\n"
-        "- The ONLY valid import paths are those listed in IMPORT HINTS above\n"
-        "- For React components: import ComponentName from './path/to/Component'\n"
-        "- For named exports: import { functionName } from './path/to/module'\n\n"
+        "IMPORT RULES:\n"
+        "- You MUST import ONLY from the module paths listed above\n"
+        "- NEVER invent module paths not listed above\n"
+        "- NEVER use the repository or project name as a package prefix\n"
+        "- NEVER import from modules ending in: utils, helpers, database, "
+        "constants, config unless explicitly listed above\n"
+        "- If a symbol is not importable from the listed paths, do NOT import it\n"
+        "- For Python: use exactly the module path shown (e.g. 'backend.main')\n"
+        "- For JS/TS: use exactly the relative path shown (e.g. './Signup')\n\n"
 
         "====================\n"
         "DEPENDENCIES\n"
@@ -295,11 +294,16 @@ def _build_existing_tests_reference(target: GenerationTarget) -> str:
 def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> list[str]:
     if target.language == "python":
         module_path = _python_module_path(target.source_file)
-        symbol_name = target.function_change.enclosing_class_name or target.function_change.function_name.split(".")[0]
+        func_name = target.function_change.function_name.split(".")[-1]
+        class_name = target.function_change.enclosing_class_name
         hints = [f"Source file: {target.source_file}"]
         if module_path:
-            hints.append(f"Module path for imports: {module_path}")
-            hints.append(f"Prefer imports like: from {module_path} import {symbol_name}")
+            hints.append(f"Module path: {module_path}")
+            if class_name:
+                hints.append(f"Import the class: from {module_path} import {class_name}")
+            else:
+                hints.append(f"Import the function: from {module_path} import {func_name}")
+            hints.append(f"Only import from '{module_path}' — do NOT invent other module paths")
         return hints
 
     # Normalize source_file to a relative path (strip absolute prefix / drive letter)
@@ -314,8 +318,9 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
     symbol_name = target.function_change.enclosing_class_name or target.function_change.function_name.split(".")[0]
     return [
         f"Source file: {target.source_file}",
-        f"Relative import from generated tests: {relative_import}",
-        f"Prefer imports from '{relative_import}' for {symbol_name}",
+        f"Import path (relative from test file): '{relative_import}'",
+        f"Example: import {symbol_name} from '{relative_import}'",
+        f"ONLY use this exact path — never use absolute or repo-name paths",
     ]
 
 

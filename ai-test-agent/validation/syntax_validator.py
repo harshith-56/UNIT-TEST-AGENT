@@ -26,6 +26,12 @@ BANNED_OUTPUT_PATTERNS = (
     re.compile(r"\b(?:sqlite3|psycopg|psycopg2)\.connect\s*\("),
     re.compile(r"\bopen\s*\([^\n,]+,\s*['\"](?:w|a|x)"),
     re.compile(r"\b(?:Path|pathlib\.Path)\([^\n]*\)\.(?:write_text|write_bytes|open)\s*\("),
+    # Bans imports from ALL_CAPS_REPO_NAME style paths (GitHub repo names, never real packages)
+    # e.g. from ECOMMERCE_UNIT_TEST_AGENT_TESTING.backend import X
+    re.compile(r"(?:from|import)\s+[A-Z][A-Z0-9_]{9,}(?:\s*\.|import)"),
+    # Bans JS/TS imports with ALL_CAPS directory segments in path
+    # e.g. import X from '../../ECOMMERCE_UNIT_TEST_AGENT_TESTING/...'
+    re.compile(r"""(?:from|import|require)\s*\(?['"][^'"]*[A-Z][A-Z0-9_]{9,}[^'"]*['"]"""),
 )
 
 
@@ -100,13 +106,22 @@ def _is_valid_generated_test(generated_test: GeneratedTest) -> bool:
         if generated_test.repair_test_names:
             if set(test_names) != set(generated_test.repair_test_names):
                 return False
-        elif not 1 <= len(test_names) <= 8:
+        elif not 1 <= len(test_names) <= 20:
+            return False
+    elif generated_test.language in ("javascript", "typescript"):
+        # Jest uses describe/it blocks — lower minimum, allow describe groups
+        if not 1 <= len(test_names) <= 20:
             return False
     elif not 3 <= len(test_names) <= 8:
         return False
 
-    if any(not name.startswith(f"test_{generated_test.test_id}_") for name in test_names):
-        return False
+    if generated_test.language == "python":
+        if any(
+            not name.startswith(f"test_{generated_test.test_id}_")
+            for name in test_names
+        ):
+            return False
+    # JS/TS uses describe/it style — no prefix requirement
     return is_syntax_valid(generated_test.language, generated_test.content, generated_test.source_file)
 
 
