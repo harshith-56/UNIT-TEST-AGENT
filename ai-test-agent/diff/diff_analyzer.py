@@ -570,7 +570,17 @@ def _select_parser(language: str):
 
 def _is_test_or_generated_path(file_path: str) -> bool:
     normalized = file_path.replace("\\", "/").lower()
-    return "/tests/" in normalized or normalized.startswith("tests/") or "/ai_generated/" in normalized
+    if "/tests/" in normalized or normalized.startswith("tests/"):
+        return True
+    if "/ai_generated/" in normalized:
+        return True
+    _IGNORED_DIRS = {
+        "node_modules", ".next", "dist", "build",
+        "public", ".nuxt", "out", "coverage", "__pycache__",
+    }
+    if set(normalized.split("/")) & _IGNORED_DIRS:
+        return True
+    return False
 
 
 def _is_ignored_non_source_path(file_path: str) -> bool:

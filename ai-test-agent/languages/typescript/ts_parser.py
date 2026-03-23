@@ -14,7 +14,6 @@ _VALIDATION_PATTERN = re.compile(r"\b(validate|check|parse|assert|throw|error|re
 
 
 _FUNCTION_CONTAINER_TYPES = {
-    "function_declaration",
     "method_definition",
     "arrow_function",
     "function_expression",
@@ -67,6 +66,24 @@ def parse_functions(file_path: Path, source_text: str | None = None) -> list[Par
             continue
 
         for declarator in _find_top_level_declarators(child):
+            if declarator.type == "function_declaration":
+                name_node = next(
+                    (c for c in declarator.children if c.type == "identifier"),
+                    None,
+                )
+                if name_node is None:
+                    continue
+                name = name_node.text.decode("utf-8")
+                functions.append(
+                    _build_function(
+                        function_name=name,
+                        node=declarator,
+                        source_bytes=source_bytes,
+                        context_code=_node_text(declarator, source_bytes),
+                        signature=_build_signature(name, declarator, source_bytes),
+                    )
+                )
+                continue
             value = declarator.child_by_field_name("value")
             if value is None or value.type not in {"arrow_function", "function_expression"}:
                 continue
@@ -86,6 +103,8 @@ def parse_functions(file_path: Path, source_text: str | None = None) -> list[Par
 
 def _find_top_level_declarators(node) -> list:
     if node.type == "variable_declarator":
+        return [node]
+    if node.type == "function_declaration":
         return [node]
     if node.type in _FUNCTION_CONTAINER_TYPES:
         return []

@@ -22,6 +22,40 @@ def parse_functions(file_path: Path, source_text: str | None = None) -> list[Par
 
     for statement in getattr(program, "body", []) or []:
         node_type = getattr(statement, "type", None)
+
+        if node_type == "ExportDefaultDeclaration":
+            declaration = getattr(statement, "declaration", None)
+            if declaration is None:
+                continue
+            inner_type = getattr(declaration, "type", None)
+            if inner_type == "FunctionDeclaration":
+                name = getattr(getattr(declaration, "id", None), "name", None) or "default"
+                if getattr(declaration, "loc", None) is not None:
+                    functions.append(_build_from_node(declaration, lines, name))
+            elif inner_type in {"ArrowFunctionExpression", "FunctionExpression"}:
+                if getattr(declaration, "loc", None) is not None:
+                    functions.append(_build_from_node(declaration, lines, "default"))
+            continue
+
+        if node_type == "ExportNamedDeclaration":
+            declaration = getattr(statement, "declaration", None)
+            if declaration is None:
+                continue
+            inner_type = getattr(declaration, "type", None)
+            if inner_type == "FunctionDeclaration":
+                name = getattr(getattr(declaration, "id", None), "name", None)
+                if name and getattr(declaration, "loc", None) is not None:
+                    functions.append(_build_from_node(declaration, lines, name))
+            elif inner_type == "VariableDeclaration":
+                for declarator in getattr(declaration, "declarations", []) or []:
+                    d_name = getattr(getattr(declarator, "id", None), "name", None)
+                    init = getattr(declarator, "init", None)
+                    init_type = getattr(init, "type", None)
+                    if d_name and init_type in {"ArrowFunctionExpression", "FunctionExpression"}:
+                        if getattr(init, "loc", None) is not None:
+                            functions.append(_build_from_node(init, lines, d_name))
+            continue
+
         if node_type == "ClassDeclaration":
             class_name = getattr(getattr(statement, "id", None), "name", None)
             class_source = _slice_lines(lines, statement.loc.start.line, statement.loc.end.line)
