@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -111,6 +112,16 @@ def build_prompt(llm_input: LLMInput) -> str:
         "IMPORT HINTS\n"
         "====================\n"
         f"{import_hints}\n\n"
+
+        "====================\n"
+        "IMPORT PATH RULES (CRITICAL)\n"
+        "====================\n"
+        "- Import paths MUST be relative (starting with ./ or ../)\n"
+        "- NEVER use the repository name in any import path\n"
+        "- NEVER use absolute paths in imports\n"
+        "- The ONLY valid import paths are those listed in IMPORT HINTS above\n"
+        "- For React components: import ComponentName from './path/to/Component'\n"
+        "- For named exports: import { functionName } from './path/to/module'\n\n"
 
         "====================\n"
         "DEPENDENCIES\n"
@@ -291,7 +302,11 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
             hints.append(f"Prefer imports like: from {module_path} import {symbol_name}")
         return hints
 
-    source_no_suffix = PurePosixPath(target.source_file).with_suffix("")
+    # Normalize source_file to a relative path (strip absolute prefix / drive letter)
+    source_file_str = target.source_file.replace("\\", "/")
+    source_file_str = re.sub(r"^[A-Za-z]:[/\\]", "", source_file_str)
+    source_file_str = source_file_str.lstrip("/")
+    source_no_suffix = PurePosixPath(source_file_str).with_suffix("")
     generated_dir = PurePosixPath(generated_tests_dir.as_posix())
     relative_import = posixpath.relpath(source_no_suffix.as_posix(), generated_dir.as_posix())
     if not relative_import.startswith("."):
