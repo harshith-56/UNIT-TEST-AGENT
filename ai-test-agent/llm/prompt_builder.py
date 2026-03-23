@@ -303,6 +303,21 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
             else:
                 hints.append(f"Import the function: from {module_path} import {func_name}")
             hints.append(f"Only import from '{module_path}' — do NOT invent other module paths")
+        # Add hints for sibling modules in same package
+        source_path = PurePosixPath(target.source_file.replace("\\", "/"))
+        package_parts = list(source_path.parent.parts)
+        if package_parts:
+            package = ".".join(package_parts)
+            hints.append(
+                f"Other importable modules in same package: {package}.schemas, "
+                f"{package}.models, {package}.db, {package}.dependencies"
+            )
+            hints.append(
+                f"For request/response types: from {package}.schemas import SignupRequest, SignupResponse"
+            )
+            hints.append(
+                f"For DB models: from {package}.models import User"
+            )
         return hints
 
     # Normalize source_file to a relative path (strip absolute prefix / drive letter)

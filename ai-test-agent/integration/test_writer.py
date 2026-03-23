@@ -49,10 +49,10 @@ def write_generated_tests(
 
 def _destination_for_action(generated_tests_dir: Path, action: MaintenanceAction) -> Path:
     if action.language == "python":
-        return generated_tests_dir / f"test_ai_generated_{sanitize_module_name(action.source_file)}.py"
+        return generated_tests_dir / f"test_ai_generated_{sanitize_module_name(_sanitize_source_path(action.source_file))}.py"
     if action.language == "javascript":
-        return generated_tests_dir / f"ai_generated_{sanitize_module_name(action.source_file)}.test.js"
-    return generated_tests_dir / f"ai_generated_{sanitize_module_name(action.source_file)}.test.ts"
+        return generated_tests_dir / f"ai_generated_{sanitize_module_name(_sanitize_source_path(action.source_file))}.test.js"
+    return generated_tests_dir / f"ai_generated_{sanitize_module_name(_sanitize_source_path(action.source_file))}.test.ts"
 
 
 def _apply_maintenance_action(destination: Path, action: MaintenanceAction, mapping: dict[str, dict]) -> bool:
@@ -405,8 +405,29 @@ def _clean_spacing(content: str) -> str:
     return cleaned.strip() + ("\n" if cleaned.strip() else "")
 
 
+def _sanitize_source_path(source_file: str) -> str:
+    """
+    Strip top-level ALL_CAPS repo folder from source path for naming.
+    e.g. ECOMMERCE_UNIT_TEST_AGENT_TESTING/backend/main.py -> backend/main.py
+    e.g. backend/main.py -> backend/main.py (unchanged)
+    """
+    parts = Path(source_file.replace("\\", "/")).parts
+    if not parts:
+        return source_file
+    first = parts[0]
+    if (
+        first == first.upper()
+        and "_" in first
+        and len(first) >= 8
+        and first.replace("_", "").isalpha()
+    ):
+        remaining = "/".join(parts[1:])
+        return remaining if remaining else source_file
+    return source_file
+
+
 def _build_file_name(generated_test: GeneratedTest) -> str:
-    module_name = sanitize_module_name(generated_test.source_file)
+    module_name = sanitize_module_name(_sanitize_source_path(generated_test.source_file))
     if generated_test.language == "python":
         return f"test_ai_generated_{module_name}.py"
     if generated_test.language == "javascript":
