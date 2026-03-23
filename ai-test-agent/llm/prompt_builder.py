@@ -51,24 +51,18 @@ def _detect_external_calls(source_code: str) -> list[str]:
     hints = []
     seen = set()
 
-    # Collect names created locally inside the function body
-    # (assigned with = , so they are not external)
     local_names = set(re.findall(
         r"^\s{4,}(\w+)\s*=",
         source_code,
         re.MULTILINE,
     ))
 
-    # Rule 1: obj.method() calls where obj was not created locally
-    # These are external objects — passed in, global, or module-level
-    # Must be mocked regardless of what framework or library they are
     for obj, method in re.findall(r"\b(\w+)\.(\w+)\s*\(", source_code):
         key = f"{obj}.{method}"
         if key in seen:
             continue
         if obj in local_names:
             continue
-        # Skip language built-ins and standard library names
         if obj in {
             "self", "cls", "str", "int", "float", "bool",
             "list", "dict", "set", "tuple", "type",
@@ -84,9 +78,6 @@ def _detect_external_calls(source_code: str) -> list[str]:
             f"function and must be mocked in tests, not called for real"
         )
 
-    # Rule 2: reads or writes to subscript variables not created locally
-    # e.g. _cache[key] = value, store[id], sessions[token]
-    # These are module-level or closure state — must be patched
     for name in re.findall(r"\b(\w+)\s*\[", source_code):
         key = f"subscript:{name}"
         if key in seen:
@@ -102,10 +93,6 @@ def _detect_external_calls(source_code: str) -> list[str]:
             f"not assigned directly as a local variable"
         )
 
-    # Rule 3: parameters with non-trivial default values in the signature
-    # e.g. def f(x: Type = SomeClass()) or def f(x = someFunction())
-    # These defaults are framework/container injection — they do nothing
-    # in a plain test environment. The parameter must be passed directly.
     first_line = (
         source_code.strip().splitlines()[0]
         if source_code.strip() else ""
@@ -125,31 +112,17 @@ def _detect_external_calls(source_code: str) -> list[str]:
 
 
 def _detect_ui_component(source_code: str, language: str) -> str:
-    """
-    Detect if the function under test is a UI component.
-    Returns a non-empty string with testing guidance if it is,
-    empty string if it is not.
-
-    A UI component is any function that:
-    - Returns JSX/TSX (contains <, />, or JSX-like syntax in return)
-    - Is a React/Vue/Svelte/Angular component function
-
-    These cannot be tested by calling them directly — they must
-    be rendered through the framework's testing utilities.
-    """
     if language not in ("javascript", "typescript"):
         return ""
 
-    # Detect JSX/TSX return — the universal signal of a UI component
-    # regardless of which framework (React, Vue, Svelte, etc.)
     jsx_patterns = [
-        r"return\s*\(",          # return ( — multiline JSX
-        r"return\s*<",           # return < — inline JSX
-        r"=>\s*<",               # => < — arrow function returning JSX
-        r"=>\s*\(",              # => ( — arrow function with parens
-        r"<[A-Z][a-zA-Z]+",     # <ComponentName — JSX component tag
-        r"<[a-z]+\s+[a-z]+=",  # <div className= or <input type=
-        r"</[a-zA-Z]",           # closing JSX tag
+        r"return\s*\(",
+        r"return\s*<",
+        r"=>\s*<",
+        r"=>\s*\(",
+        r"<[A-Z][a-zA-Z]+",
+        r"<[a-z]+\s+[a-z]+=",
+        r"</[a-zA-Z]",
     ]
 
     is_component = any(
@@ -285,8 +258,8 @@ def build_prompt(llm_input: LLMInput) -> str:
         "IMPORT RULES:\n"
         "- You MUST import ONLY from the module paths listed above\n"
         "- NEVER invent module paths not listed above\n"
-        "- NEVER import from modules like utils, helpers, constants, or config unless explicitly listed in import hints above\n"
-        "constants, config unless explicitly listed above\n"
+        "- NEVER use the repository or project name as a package prefix\n"
+        "- NEVER import from modules not explicitly listed in import hints above\n"
         "- If a symbol is not importable from the listed paths, do NOT import it\n"
         "- For Python: use exactly the module path shown (e.g. 'backend.main')\n"
         "- For JS/TS: use exactly the relative path shown (e.g. './Signup')\n\n"
@@ -455,7 +428,7 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
     if failure_reason == "truncated":
         correction += (
             "\nYOUR OUTPUT WAS CUT OFF. Rules:\n"
-            "- Generate FEWER tests this time — 2 or 3 maximum\n"
+            "- Generate the minimum required tests (3) but keep each one short\n"
             "- Make absolutely sure the last test is fully closed\n"
             "- The final line must be a complete statement\n"
         )
@@ -475,17 +448,74 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
             "- Never call methods on the raw generator object\n"
         )
 
+    if failure_reason == "banned_pattern":
+        correction += (
+            "\nYOUR OUTPUT CONTAINED A BANNED PATTERN. Rules:\n"
+            "- No create_engine, real DB connections, or HTTP calls\n"
+            "- No file writes (open with 'w', Path.write_text, etc)\n"
+            "- No placeholders (***, ???, TODO, TBD)\n"
+            "- No 'your_module' anywhere\n"
+            "- Replace any banned pattern with a proper mock\n"
+        )
+
+    if failure_reason == "stub_body":
+        correction += (
+            "\nYOUR OUTPUT CONTAINED STUB FUNCTIONS. Rules:\n"
+            "- Every test must have real assertions\n"
+            "- No 'pass', no 'raise NotImplementedError'\n"
+            "- No '# implement' or '# fill in' comments\n"
+            "- Write the complete test body for every test function\n"
+        )
+
+    if "suspicious_imports" in failure_reason:
+        correction += (
+            "\nYOUR IMPORTS WERE SUSPICIOUS. Rules:\n"
+            "- ONLY import from the paths listed in IMPORT HINTS\n"
+            "- Do not import from invented module paths\n"
+            "- Do not use the repository name as a package prefix\n"
+        )
+
+    if failure_reason == "missing_screen_import":
+        correction += (
+            "\nYOU USED screen BUT DID NOT IMPORT IT. Fix:\n"
+            "- Change your import to include screen:\n"
+            "  import { render, screen, fireEvent, waitFor } "
+            "from '@testing-library/react'\n"
+        )
+
+    if failure_reason == "no_tests":
+        correction += (
+            "\nNO TEST FUNCTIONS WERE DETECTED. Rules:\n"
+            "- For Python: every test must start with def test_\n"
+            "- For JS/TS: every test must use it('...') or test('...')\n"
+            "- Do not put tests inside classes for Python\n"
+            "- Generate at least 3 test functions\n"
+        )
+
+    if attempt_number >= 5 and _detect_ui_component(
+        llm_input.primary_code_block, llm_input.language
+    ):
+        correction += (
+            "\nUI COMPONENT RETRY — simplify your approach:\n"
+            "- Use render(<ComponentName />) — nothing else\n"
+            "- Use screen.getByText(), screen.getByPlaceholderText(), "
+            "screen.getByRole() to find elements\n"
+            "- Use fireEvent.change() and fireEvent.click() for interactions\n"
+            "- Use await waitFor(() => ...) for async assertions\n"
+            "- Do NOT call the component as a function\n"
+            "- Do NOT try to access handleSubmit or any method from the result\n"
+            "- Import screen: { render, screen, fireEvent, waitFor }\n"
+        )
+
     if attempt_number >= 7:
         correction += (
-            "\n\nCRITICAL — attempt {attempt_number} of 12:\n"
-            "- Generate ONLY 2 simple tests\n"
-            "- Use only basic assert statements\n"
-            "- No complex mocking — patch only what is absolutely necessary\n"
+            f"\n\nCRITICAL — attempt {attempt_number} of 12:\n"
+            "- Generate the MINIMUM number of tests required — "
+            "3-6 tests for JS/TS, 3-6 tests for Python\n"
             "- The last line of your output must close all open blocks\n"
-        ).format(attempt_number=attempt_number)
+        )
 
     return base + correction
-
 
 
 def _build_existing_tests_reference(target: GenerationTarget) -> str:
@@ -520,7 +550,6 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
             hints.append(f"Only import from '{module_path}' — do NOT invent other module paths")
         return hints
 
-    # Normalize source_file to a relative path (strip absolute prefix / drive letter)
     source_file_str = target.source_file.replace("\\", "/")
     source_file_str = re.sub(r"^[A-Za-z]:[/\\]", "", source_file_str)
     source_file_str = source_file_str.lstrip("/")
