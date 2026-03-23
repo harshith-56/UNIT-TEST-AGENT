@@ -315,10 +315,37 @@ def _should_skip_generation(function: ParsedFunction) -> bool:
         and not re.match(r"^\s*(async\s+)?function\s+\w+", line)
         and not re.match(r"^\s*class\s+\w+", line)
     ]
+
     has_validation = (
         function.has_validation
         or bool(_VALIDATION_HINT_PATTERN.search(function.source_code))
     )
+
+    # Detect externally visible side effects
+    # These functions always need tests regardless of size
+    _EXTERNAL_SIDE_EFFECT_PATTERNS = (
+        # Mutates external state via subscript assignment
+        re.compile(r"\b\w+\s*\[.+\]\s*=(?!=)"),
+        # Deletes from external collections
+        re.compile(r"\bdel\s+\w+\s*\["),
+        # Mutating method calls on likely-external objects
+        re.compile(
+            r"\b\w+\.(append|extend|update|pop|remove|delete"
+            r"|commit|rollback|add|flush|execute|send|publish"
+            r"|write|save|close)\s*\("
+        ),
+        # Writes to names starting with _ (module-level convention)
+        re.compile(r"\b_\w+\s*\[.+\]\s*="),
+    )
+    has_external_side_effects = any(
+        p.search(function.source_code)
+        for p in _EXTERNAL_SIDE_EFFECT_PATTERNS
+    )
+
+    if has_external_side_effects:
+        return False  # always generate tests for stateful functions
+
+    # For pure functions: skip if small and simple
     return (
         len(meaningful_lines) < 10
         and function.branch_count == 0

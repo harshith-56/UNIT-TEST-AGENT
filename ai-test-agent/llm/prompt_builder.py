@@ -58,9 +58,32 @@ def build_prompt(llm_input: LLMInput) -> str:
     is_repair = "Repair only these failing tests:" in existing_tests
 
     if not is_repair:
-        instructions = f"Generate 3 to 6 production-grade unit tests for {llm_input.function_name}."
+        instructions = f"Generate 3 to 9 production-grade unit tests for {llm_input.function_name}."
     else:
         instructions = "Fix ONLY failing tests. Keep EXACT same names."
+
+    # Check if function uses module-level state (needs patch hint)
+    needs_patch_hint = bool(re.search(
+        r"\b_\w+\s*[\[\.]|del\s+_\w+",
+        llm_input.primary_code_block
+    ))
+    patch_hint = ""
+    if needs_patch_hint:
+        # Extract module path from first import hint
+        module_hint = ""
+        for hint in llm_input.import_hints:
+            if "Module path" in hint or "from " in hint:
+                import re as _re
+                m = _re.search(r"from ([\w.]+) import", hint)
+                if m:
+                    module_hint = m.group(1)
+                    break
+        if module_hint:
+            patch_hint = (
+                f"\nPATCH HINT: This function uses module-level state.\n"
+                f"To patch it in tests use: "
+                f"patch('{module_hint}._variable_name', replacement_value)\n"
+            )
 
     return (
         "You are an EXPERT production-grade UNIT TEST generator.\n"
@@ -111,7 +134,7 @@ def build_prompt(llm_input: LLMInput) -> str:
         "====================\n"
         "IMPORT HINTS (MANDATORY — USE ONLY THESE)\n"
         "====================\n"
-        f"{import_hints}\n\n"
+        f"{import_hints}{patch_hint}\n\n"
         "IMPORT RULES:\n"
         "- You MUST import ONLY from the module paths listed above\n"
         "- NEVER invent module paths not listed above\n"
@@ -172,11 +195,65 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- Include boundary values\n\n"
 
         "====================\n"
-        "MOCKING RULES\n"
+        "MOCKING RULES (READ CAREFULLY)\n"
         "====================\n"
-        "- PURE functions → NO mocking\n"
-        "- SIDE EFFECT → mock external dependencies ONLY\n"
-        "- DO NOT mock internal logic\n\n"
+        "Identify which category the function under test falls into:\n\n"
+        "CATEGORY A — Pure function (no I/O, no state, no calls to external systems)\n"
+        "  Example: def add(a, b): return a + b\n"
+        "  Rule: NO mocking. Call directly and assert the return value.\n\n"
+        "CATEGORY B — Function with INJECTED dependencies (db, client, service passed as args)\n"
+        "  Example: def create_user(payload, db: Session)\n"
+        "  Rule: Pass a mock directly. DO NOT use Depends().\n"
+        "  Correct:\n"
+        "    from unittest.mock import MagicMock\n"
+        "    db = MagicMock()\n"
+        "    db.query.return_value.filter.return_value.first.return_value = None\n"
+        "    result = create_user(payload, db)\n"
+        "  WRONG: def test_x(db = Depends(get_db)):  ← Depends() does nothing in pytest\n\n"
+        "CATEGORY C — Function that reads/writes MODULE-LEVEL state\n"
+        "  Example: _sessions[token] = {...} where _sessions is a module-level dict\n"
+        "  Rule: Use patch() to replace the module-level variable.\n"
+        "  Correct:\n"
+        "    from unittest.mock import patch\n"
+        "    with patch('mymodule._sessions', {}) as mock_sessions:\n"
+        "        result = my_function('token')\n"
+        "  WRONG: _sessions = {}  ← this creates a LOCAL variable, not a patch\n\n"
+        "CATEGORY D — Function that CALLS other functions internally\n"
+        "  Example: def signup(payload, db): error = validate_signup(payload)\n"
+        "  Rule: Mock the called function if it has side effects.\n"
+        "  Correct:\n"
+        "    with patch('mymodule.validate_signup', return_value=None):\n"
+        "        result = signup(payload, db)\n\n"
+        "GENERAL RULES:\n"
+        "- NEVER use framework DI (Depends, inject, provide) in test parameters\n"
+        "- NEVER assign module-level variables directly in tests\n"
+        "- NEVER make real database connections, HTTP calls, or file writes\n"
+        "- ALWAYS mock at the boundary — mock what the function CALLS, not what calls it\n"
+        "- For database sessions: db = MagicMock() then configure return values\n"
+        "- For module state: use patch() as context manager\n\n"
+        "MOCKING CHEAT SHEET (copy these patterns exactly):\n\n"
+        "# Pattern 1 — injected db session (SQLAlchemy, any ORM)\n"
+        "from unittest.mock import MagicMock\n"
+        "db = MagicMock()\n"
+        "db.add = MagicMock()\n"
+        "db.commit = MagicMock()\n"
+        "db.rollback = MagicMock()\n"
+        "db.query.return_value.filter.return_value.first.return_value = None\n\n"
+        "# Pattern 2 — module-level dict or state\n"
+        "from unittest.mock import patch\n"
+        "with patch('exact.module.path._variable_name', initial_value):\n"
+        "    result = function_under_test(args)\n\n"
+        "# Pattern 3 — internal function call\n"
+        "with patch('exact.module.path.called_function_name') as mock_fn:\n"
+        "    mock_fn.return_value = expected_value\n"
+        "    result = function_under_test(args)\n\n"
+        "# Pattern 4 — pure function (no mocking needed)\n"
+        "result = pure_function(input_value)\n"
+        "assert result == expected_output\n\n"
+        "USE THE IMPORT HINTS above to get the exact module path "
+        "for patch() calls. Example: if import hint says "
+        "'Module path: myapp.auth' then patch path is "
+        "'myapp.auth._sessions' or 'myapp.auth.helper_function'.\n\n"
 
         "====================\n"
         "GENERATOR FUNCTIONS\n"
@@ -221,6 +298,11 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
         "- Generate ONLY UNIT tests\n"
         "- DO NOT use DB, TestClient, or create_engine\n"
         "- Ensure every function is complete before starting the next\n"
+        "- If the function has injected dependencies (db, client, "
+        "session as args): pass MagicMock() directly, never Depends()\n"
+        "- If the function uses module-level state (_var[x] = y): "
+        "use patch('module.path._varname', value) not direct assignment\n"
+        "- All external calls (db, network, file) MUST be mocked\n"
     )
 
     if failure_reason == "truncated":
