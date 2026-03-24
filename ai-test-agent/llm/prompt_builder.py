@@ -262,7 +262,11 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- NEVER import from modules not explicitly listed in import hints above\n"
         "- If a symbol is not importable from the listed paths, do NOT import it\n"
         "- For Python: use exactly the module path shown (e.g. 'backend.main')\n"
-        "- For JS/TS: use exactly the relative path shown (e.g. './Signup')\n\n"
+        "- For JS/TS: use exactly the relative path shown (e.g. './Signup')\n"
+        "- If a type is shown in DEPENDENCIES with a source file path, "
+        "import it from that exact module path\n"
+        "- Example: if DEPENDENCIES shows 'SignupRequest (backend/schemas.py)' "
+        "then import it as: from backend.schemas import SignupRequest\n\n"
 
         "====================\n"
         "DEPENDENCIES\n"
@@ -548,6 +552,15 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
             else:
                 hints.append(f"Import the function: from {module_path} import {func_name}")
             hints.append(f"Only import from '{module_path}' — do NOT invent other module paths")
+            # Hint that sibling modules may contain dependency types
+            package = ".".join(module_path.split(".")[:-1])
+            if package:
+                hints.append(
+                    f"If you need request/response types or models, "
+                    f"check sibling modules in the '{package}' package. "
+                    f"Look at the DEPENDENCIES section for available types "
+                    f"and their source files — import from those exact paths."
+                )
         return hints
 
     source_file_str = target.source_file.replace("\\", "/")
