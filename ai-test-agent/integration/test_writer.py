@@ -104,6 +104,7 @@ def _write_generated_test(destination: Path, generated_test: GeneratedTest, mapp
             existing_block_body,
             generated_test.language,
             generated_test.source_file,
+            reference_content=generated_test.content,
         )
         # Merge: valid old tests + new tests
         if valid_existing.strip():
@@ -164,6 +165,7 @@ def _filter_valid_tests(
     block_content: str,
     language: str,
     source_file: str,
+    reference_content: str = "",
 ) -> str:
     """
     Given a block of test code, return only the tests that are
@@ -202,6 +204,23 @@ def _filter_valid_tests(
             if language == "python":
                 import ast
                 ast.parse(part)
+            # Stale assertion check:
+            # If a test asserts an exact string that does not appear
+            # anywhere in the new generated tests, the assertion is
+            # stale — the function's behavior changed and the old
+            # test is now wrong. Discard it.
+            if language == "python" and reference_content.strip():
+                stale = False
+                for m in re.finditer(
+                    r'assert\s+\S+\s*==\s*["\']([^"\']{9,})["\']',
+                    part,
+                ):
+                    asserted_value = m.group(1)
+                    if asserted_value not in reference_content:
+                        stale = True
+                        break
+                if stale:
+                    continue
             valid_parts.append(part.strip())
         except SyntaxError:
             continue  # drop invalid test

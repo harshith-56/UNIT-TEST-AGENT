@@ -83,7 +83,7 @@ def analyze_diff(repo_root: Path, base_branch: str) -> list[ChangedFile]:
         current_path = repo_root / file_path
         current_source = current_path.read_text(encoding="utf-8") if current_path.exists() else ""
         previous_source = get_file_content_at_ref(repo_root, f"origin/{base_branch}", file_path)
-        changed_lines, removed_lines = _extract_changed_line_sets(diff_by_file.get(file_path, ""))
+        changed_lines, removed_lines = _extract_changed_line_sets(diff_by_file.get(file_path.replace("\\", "/"), ""))
 
         current_functions = _parse_functions(language, current_path, current_source) if current_source else []
         previous_functions = _parse_functions(language, current_path, previous_source) if previous_source else []
@@ -147,7 +147,7 @@ def _split_diff_by_file(diff_text: str) -> dict[str, str]:
         if line.startswith("diff --git "):
             current_file = None
         elif line.startswith("+++ b/"):
-            current_file = line.removeprefix("+++ b/").strip()
+            current_file = line.removeprefix("+++ b/").strip().replace("\\", "/")
             chunks[current_file]
         elif current_file:
             chunks[current_file].append(line)

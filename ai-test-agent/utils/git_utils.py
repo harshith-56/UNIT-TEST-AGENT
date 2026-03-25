@@ -25,7 +25,11 @@ def get_changed_files(repo_root: Path, base_branch: str) -> list[str]:
     result = run_git_command(["diff", "--name-only", f"origin/{base_branch}...HEAD"], repo_root)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "git diff --name-only failed")
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [
+        line.strip().replace("\\", "/")
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
 
 
 def get_file_content_at_ref(repo_root: Path, git_ref: str, file_path: str) -> str | None:
