@@ -354,7 +354,15 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- NEVER make real database connections, HTTP calls, or file writes\n"
         "- ALWAYS mock at the boundary — mock what the function CALLS, not what calls it\n"
         "- For database sessions: db = MagicMock() then configure return values\n"
-        "- For module state: use patch() as context manager\n\n"
+        "- For module state: use patch() as context manager\n"
+        "- When mocking side_effect for exceptions: use the EXACT "
+        "exception type the function catches, not a generic Exception\n"
+        "- Look at the function source for except clauses to find "
+        "the right exception type\n"
+        "- Example: if function has 'except IntegrityError' then use "
+        "db.commit.side_effect = IntegrityError('msg', {}, None)\n"
+        "- Import the exception: "
+        "from sqlalchemy.exc import IntegrityError\n\n"
         "MOCKING CHEAT SHEET (copy these patterns exactly):\n\n"
         "# Pattern 1 — injected db session (SQLAlchemy, any ORM)\n"
         "from unittest.mock import MagicMock\n"
@@ -560,6 +568,26 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
                     f"check sibling modules in the '{package}' package. "
                     f"Look at the DEPENDENCIES section for available types "
                     f"and their source files — import from those exact paths."
+                )
+        # Add import hints for dependency types
+        # These are sibling modules whose types the LLM will need
+        for dep in target.dependencies:
+            if not dep.source_file:
+                continue
+            dep_module_path = _python_module_path(dep.source_file)
+            if not dep_module_path or dep_module_path == module_path:
+                continue
+            # Extract the type names the LLM is likely to need
+            # by scanning the dependency content for class definitions
+            import re as _re
+            class_names = _re.findall(
+                r"^class\s+(\w+)", dep.content, _re.MULTILINE
+            )
+            if class_names:
+                names_str = ", ".join(class_names[:5])
+                hints.append(
+                    f"For types from {dep.source_file}: "
+                    f"from {dep_module_path} import {names_str}"
                 )
         return hints
 

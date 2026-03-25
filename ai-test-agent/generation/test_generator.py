@@ -57,6 +57,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
     for target in targets:
         try:
             llm_input = build_llm_input(target)
+            LOGGER.info(f"[DEBUG] import_hints for {target.test_id}: {llm_input.import_hints}")
             base_prompt = build_prompt(llm_input)
         except SkipGeneration:
             continue
