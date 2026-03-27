@@ -440,7 +440,7 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
     if failure_reason == "truncated":
         correction += (
             "\nYOUR OUTPUT WAS CUT OFF. Rules:\n"
-            "- Generate the minimum required tests (3) but keep each one short\n"
+            "- Generate the minimum required tests (3-6) but keep each one short\n"
             "- Make absolutely sure the last test is fully closed\n"
             "- The final line must be a complete statement\n"
         )
