@@ -26,6 +26,7 @@ class LLMClient:
     def generate(self, prompt: str, temperature: float | None = None) -> LLMResponse:
         payload = {
             "model": self._config.llm_model,
+            "max_tokens": 4000,
             "temperature": temperature if temperature is not None else 0,
             "messages": [
                 {"role": "system", "content": "Generate only test code."},
