@@ -29,7 +29,7 @@ class AgentConfig:
     llm_api_key: str
     llm_model: str
     project_context_raw: str = ""
-    llm_timeout_seconds: int = 90
+    llm_timeout_seconds: int = 150
     comment_on_pr: bool = False
     fail_on_test_failure: bool = False
     fail_on_generation_failure: bool = False
@@ -45,7 +45,7 @@ def load_config() -> AgentConfig:
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
         llm_model=os.getenv("LLM_MODEL", "").strip(),
         project_context_raw=os.getenv("AI_TEST_AGENT_PROJECT_CONTEXT", "").strip(),
-        llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "90")),
+        llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "150")),
         comment_on_pr=os.getenv("AI_TEST_AGENT_COMMENT_ON_PR", "false").lower() == "true",
         fail_on_test_failure=os.getenv("AI_TEST_AGENT_FAIL_ON_TEST_FAILURE", "false").lower() == "true",
         fail_on_generation_failure=os.getenv("AI_TEST_AGENT_FAIL_ON_GENERATION_FAILURE", "false").lower() == "true",
