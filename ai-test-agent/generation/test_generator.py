@@ -74,7 +74,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
                 retry_temperature = None if attempt_number == 1 else min(0.2 + (attempt_number * 0.05), 0.8)
                 response = client.generate(prompt, temperature=retry_temperature)
 
-                LOGGER.info(f"[RAW][{target.test_id}][Attempt {attempt_number}]:\n{response.content[:800]}")
+                LOGGER.info(f"[RAW][{target.test_id}][Attempt {attempt_number}]:\n{response.content}")
 
             except Exception as e:
                 err = str(e).lower()
@@ -91,7 +91,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
             cleaned = _strip_code_fences(response.content)
 
             LOGGER.debug(f"[CLEANED_FULL][{target.test_id}]:\n{cleaned}")
-            LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned[:800]}")
+            LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned}")
 
             valid, reason = validate_content(
                 target.language,
