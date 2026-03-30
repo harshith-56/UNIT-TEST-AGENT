@@ -143,6 +143,10 @@ def _is_truncated(content: str, language: str) -> bool:
         # Line ends with bare word chars AND is not a recognized complete ending
         if re.match(r".*[a-zA-Z_]\w*$", stripped):
             if not COMPLETE_ENDINGS.search(stripped):
+                # Skip decorator lines — @decorator ends with identifier
+                # but is never a truncation indicator
+                if stripped.lstrip().startswith("@"):
+                    continue
                 # Make sure it's not just a keyword/builtin on its own line
                 bare_keyword = re.match(
                     r"^\s*(pass|return|continue|break|raise|import\s+[\w,\s]+|from\s+[\w.]+\s+import\s+[\w,\s*]+)\s*$",
