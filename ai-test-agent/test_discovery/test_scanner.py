@@ -56,14 +56,6 @@ def discover_existing_tests(repo_root: Path) -> list[Path]:
     return sorted(discovered)
 
 
-COMMON_SEGMENTS = {
-    "src", "lib", "app", "api", "core", "utils", "helpers",
-    "backend", "frontend", "common", "shared", "base", "main",
-    "services", "models", "views", "controllers", "routes",
-    "tests", "test", "spec",
-}
-
-
 def find_related_tests(
     source_file: Path,
     discovered_tests: list[Path],

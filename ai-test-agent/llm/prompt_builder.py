@@ -314,9 +314,13 @@ def build_prompt(llm_input: LLMInput) -> str:
         "====================\n"
         "- Try to BREAK the function\n"
         "- Include invalid inputs\n"
-        "- Include wrong types\n"
         "- Include edge cases\n"
-        "- Include boundary values\n\n"
+        "- Include boundary values\n"
+        "- ONLY test behaviors that are EXPLICITLY written in the "
+        "function source code\n"
+        "- NEVER write pytest.raises() or expect().toThrow() unless "
+        "the function source contains an explicit raise or throw "
+        "statement — do NOT invent error handling that is not there\n\n"
 
         "====================\n"
         "MOCKING RULES (READ CAREFULLY)\n"
@@ -456,8 +460,11 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
     if failure_reason == "truncated":
         correction += (
             "\nYOUR OUTPUT WAS CUT OFF. Rules:\n"
-            "- Generate the minimum required tests (3-6) but keep each one short\n"
-            "- Make absolutely sure the last test is fully closed\n"
+            "- Generate EXACTLY 3 tests — no more\n"
+            "- Only test: happy path, one invalid input, one edge case\n"
+            "- NEVER write pytest.raises() or expect().toThrow() unless "
+            "the function source explicitly contains raise or throw\n"
+            "- Keep every test under 8 lines\n"
             "- The final line must be a complete statement\n"
         )
 
