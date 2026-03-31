@@ -55,6 +55,13 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
     generated_tests = []
     failures = []
 
+    all_targets_by_file: dict[str, list[str]] = {}
+    for target in targets:
+        all_targets_by_file.setdefault(target.source_file, []).append(target.function_change.function_name)
+
+    attempted_by_file: dict[str, list[str]] = {}
+    succeeded_by_file: dict[str, list[str]] = {}
+
     for target in targets:
         try:
             llm_input = build_llm_input(target)
@@ -63,6 +70,7 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
         except SkipGeneration:
             continue
 
+        attempted_by_file.setdefault(target.source_file, []).append(target.function_change.function_name)
         content = None
         last_failure_reason = "unknown"
 
@@ -145,8 +153,25 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
                 test_names=extract_test_names(target.language, content),
             )
         )
+        succeeded_by_file.setdefault(target.source_file, []).append(target.function_change.function_name)
 
         time.sleep(3)
+
+    for source_file, all_funcs in all_targets_by_file.items():
+        attempted = attempted_by_file.get(source_file, [])
+        succeeded = succeeded_by_file.get(source_file, [])
+        failed_names = [f for f in attempted if f not in succeeded]
+        LOGGER.info(
+            f"[COVERAGE][{source_file}] "
+            f"{len(succeeded)}/{len(attempted)} functions covered. "
+            f"Skipped/failed: {failed_names or 'none'}"
+        )
+        untested_names = [f for f in all_funcs if f not in attempted]
+        if untested_names:
+            LOGGER.warning(
+                f"[COVERAGE][{source_file}] "
+                f"No tests generated for: {untested_names}"
+            )
 
     return GenerationResult(generated_tests=generated_tests, failures=failures)
 

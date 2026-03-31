@@ -356,7 +356,7 @@ def _should_skip_generation(function: ParsedFunction) -> bool:
 
     # For pure functions: skip if small and simple
     return (
-        len(meaningful_lines) < 10
+        len(meaningful_lines) < 4
         and function.branch_count == 0
         and not has_validation
     )

@@ -52,7 +52,18 @@ class StructuredContext:
     constraints: list[str] = field(default_factory=list)
 
     def combined_rules(self) -> list[str]:
-        return [*self.constraints, *self.rules]
+        base_rules = [*self.constraints, *self.rules]
+
+        file_filter_rule = (
+                "Only generate tests for functions that contain meaningful logic. "
+                "Skip functions that are trivial, such as those with only constants, "
+                "simple returns, configuration, routing, or no branching. "
+                "Focus only on functions with business logic, validation, "
+                "transformations, or multiple execution paths."
+
+        )
+
+        return [file_filter_rule, *base_rules]
 
 
 def parse_project_context(raw_context: str) -> StructuredContext:
