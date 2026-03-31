@@ -17,6 +17,7 @@ LOGGER = get_logger(__name__)
 
 
 MAX_GENERATION_ATTEMPTS = 12
+SKIP_AFTER_ATTEMPTS = 6
 RETRY_DELAY_SECONDS = 5
 RATE_LIMIT_SLEEP_SECONDS = 10
 POST_SUCCESS_DELAY_SECONDS = 2
@@ -104,6 +105,14 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
                     LOGGER.warning(f"[TRUNCATED][{target.test_id}] Last 3 lines:\n{last_lines}")
                 LOGGER.warning(f"[INVALID][{target.test_id}] {reason} (attempt {attempt_number})")
                 last_failure_reason = reason
+                if attempt_number >= SKIP_AFTER_ATTEMPTS:
+                    LOGGER.warning(
+                        f"[SKIP][{target.test_id}] Skipping after "
+                        f"{SKIP_AFTER_ATTEMPTS} failed attempts — "
+                        f"last failure: {reason}"
+                    )
+                    last_failure_reason = f"skipped_after_{SKIP_AFTER_ATTEMPTS}_attempts"
+                    break
                 time.sleep(RETRY_DELAY_SECONDS)
                 continue
 

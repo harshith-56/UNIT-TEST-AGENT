@@ -222,7 +222,22 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- NEVER invent fields or parameters\n"
         "- ONLY use real imports from code, dependencies, or hints\n"
         "- NEVER cut off output mid-function — finish every function you start\n"
-        "- NEVER generate more tests than you can complete — fewer complete tests beats more broken ones\n\n"
+        "- NEVER generate more tests than you can complete — fewer complete tests beats more broken ones\n"
+        "- ONLY use testing APIs you can verify exist — "
+        "if you are not 100% certain an API method exists "
+        "in the current version, use the simpler alternative\n"
+        "examples:(deprecated ones)"
+        "- For Jest: use .toThrow() not .toThrowError(), "
+        "use .toBe() not .toEqual() for primitives, "
+        "use jest.mock() for module-level state not jest.spyOn "
+        "with accessor arguments\n"
+        "- NEVER call jest.spyOn with a third 'get' or 'set' "
+        "argument unless the source explicitly defines a getter "
+        "or setter using the get/set keyword\n"
+        "- NEVER import a symbol as default if the source uses "
+        "named export, and vice versa — derive from source\n"
+        "- When in doubt about an API: use the most basic, "
+        "well-established version of it\n\n"
 
         "====================\n"
         "TEST TYPE (STRICT)\n"
@@ -266,7 +281,16 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- If a type is shown in DEPENDENCIES with a source file path, "
         "import it from that exact module path\n"
         "- Example: if DEPENDENCIES shows 'SignupRequest (backend/schemas.py)' "
-        "then import it as: from backend.schemas import SignupRequest\n\n"
+        "then import it as: from backend.schemas import SignupRequest\n"
+        "- CRITICAL: before writing any import statement, look at "
+        "the FUNCTION UNDER TEST source to determine the export style\n"
+        "- If the source contains 'export default': "
+        "use default import → import X from './path'\n"
+        "- If the source contains 'export function', 'export const', "
+        "'export class', or 'export {': "
+        "use named import → import { X } from './path'\n"
+        "- NEVER guess the import style — always derive it from source\n"
+        "- NEVER use deprecated methods for writing unit tests eg: .toThrowError()-> .toThrow() since it was deprecated\n\n"
 
         "====================\n"
         "DEPENDENCIES\n"
@@ -319,8 +343,20 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- ONLY test behaviors that are EXPLICITLY written in the "
         "function source code\n"
         "- NEVER write pytest.raises() or expect().toThrow() unless "
-        "the function source contains an explicit raise or throw "
-        "statement — do NOT invent error handling that is not there\n\n"
+        "the function source contains an explicit raise or throw statement\n"
+        "- NEVER invent validation or error handling not present in source\n"
+        "- EXCEPTION TYPE: assert the exact exception the code raises — "
+        "read every raise statement in the source and use that type. "
+        "If the code does not catch or convert exceptions, the original "
+        "exception type propagates — do not substitute a different one.\n"
+        "- SEQUENTIAL EXECUTION: functions that loop process each item "
+        "in order. If a later item fails, earlier items already ran. "
+        "Never assert an earlier call was 'not called' when a later "
+        "step fails — check actual call counts from the source logic.\n"
+        "- INPUT VALIDATION: only assert that invalid inputs raise "
+        "exceptions if the source explicitly checks and raises for them. "
+        "Language built-ins accept many values you might consider invalid "
+        "(e.g. None, 0, empty string) — do not assume they raise.\n\n"
 
         "====================\n"
         "MOCKING RULES (READ CAREFULLY)\n"
@@ -518,6 +554,18 @@ def build_retry_prompt(llm_input: LLMInput, failure_reason: str, attempt_number:
             "from '@testing-library/react'\n"
         )
 
+    if failure_reason == "banned_js_pattern":
+        correction += (
+            "\nYOUR OUTPUT USED A BANNED JS/TS PATTERN. Rules:\n"
+            "- Use .toThrow() not .toThrowError()\n"
+            "- Never use jest.spyOn with 'get'/'set' accessor — "
+            "use jest.mock() to replace module-level variables\n"
+            "- Only use test APIs that exist in modern Jest\n"
+            "- When mocking module state: jest.mock('./path', "
+            "() => ({ ...jest.requireActual('./path'), "
+            "myVar: override }))\n"
+        )
+
     if failure_reason == "no_tests":
         correction += (
             "\nNO TEST FUNCTIONS WERE DETECTED. Rules:\n"
@@ -622,11 +670,51 @@ def _build_import_hints(target: GenerationTarget, generated_tests_dir: Path) -> 
     relative_import = posixpath.relpath(source_no_suffix.as_posix(), generated_dir.as_posix())
     if not relative_import.startswith("."):
         relative_import = f"./{relative_import}"
-    symbol_name = target.function_change.enclosing_class_name or target.function_change.function_name.split(".")[0]
+    symbol_name = (
+        target.function_change.enclosing_class_name
+        or target.function_change.function_name.split(".")[0]
+    )
+
+    # Derive the correct import style from the actual source.
+    # This works for any JS/TS project regardless of framework.
+    # Rule: look for export keywords in the source, not in the file.
+    source = target.function_change.source_code or ""
+
+    # Check for default export
+    _has_default = bool(
+        re.search(r"\bexport\s+default\b", source)
+    )
+    # Check for named export
+    _has_named = bool(
+        re.search(
+            r"\bexport\s+(?:function|const|class|let|var|async\s+function)\b",
+            source,
+        )
+    )
+
+    if _has_default:
+        correct_import = f"import {symbol_name} from '{relative_import}'"
+        export_note = "DEFAULT export — use default import (no curly braces)"
+    elif _has_named:
+        correct_import = f"import {{ {symbol_name} }} from '{relative_import}'"
+        export_note = "NAMED export — use named import (with curly braces {{ }})"
+    else:
+        # Cannot determine from source alone — show both options
+        correct_import = (
+            f"import {{ {symbol_name} }} from '{relative_import}'"
+            f"  OR  import {symbol_name} from '{relative_import}'"
+        )
+        export_note = (
+            "Export style unclear — check the source file. "
+            "Use named import {{ }} for named exports, "
+            "default import for export default."
+        )
+
     return [
         f"Source file: {target.source_file}",
         f"Import path (relative from test file): '{relative_import}'",
-        f"Example: import {symbol_name} from '{relative_import}'",
+        f"Correct import: {correct_import}",
+        f"Export type: {export_note}",
         f"ONLY use this exact path — never use absolute or repo-name paths",
     ]
 

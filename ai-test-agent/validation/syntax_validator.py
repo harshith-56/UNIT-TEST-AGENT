@@ -55,11 +55,26 @@ def validate_content(language: str, content: str, source_file: str) -> tuple[boo
             LOGGER.warning(f"[validate_content] banned pattern matched")
             return False, "banned_pattern"
 
-    # Check 4: syntax
+    # Check 4: universally banned JS/TS patterns
+    _UNIVERSAL_JS_BANS = [
+        # Deprecated Jest API — removed in v30
+        re.compile(r"\.toThrowError\s*\("),
+        # Getter spy on non-getter — always wrong for plain consts
+        re.compile(
+            r"jest\.spyOn\s*\([^)]+,\s*['\"][^'\"]+['\"],\s*['\"](?:get|set)['\"]"
+        ),
+    ]
+
+    if language in ("javascript", "typescript"):
+        for pattern in _UNIVERSAL_JS_BANS:
+            if pattern.search(content):
+                return False, "banned_js_pattern"
+
+    # Check 5: syntax
     if not is_syntax_valid(language, content, source_file):
         return False, "syntax_error"
 
-    # Check 5: at least one test function exists
+    # Check 6: at least one test function exists
     names = extract_test_names(language, content)
     if not names:
         return False, "no_tests"
