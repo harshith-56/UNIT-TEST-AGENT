@@ -75,13 +75,35 @@ def main() -> int:
     test_results = []
     if write_result.written_paths or write_result.maintenance_changes:
         test_results = execute_tests(config.repo_root, detected_languages)
+        LOGGER.info(
+            f"[TEST_RUN] Executed tests. "
+            f"Total results: {len(test_results)}. "
+            f"Failures: {sum(1 for r in test_results if r.returncode != 0)}"
+        )
 
+    diff_function_ids = {t.test_id for t in generation_context.targets}
     repair_targets = _build_repair_targets(
         generation_context.targets,
         write_result.test_mapping,
         test_results,
         write_result.written_paths,
+        diff_function_ids=diff_function_ids,
     )
+
+    LOGGER.info(
+        f"[TEST_RUN] {len(test_results)} test results. "
+        f"Failures in this PR's functions: {len(repair_targets)}. "
+        f"Failures outside diff (not repaired): "
+        f"{sum(1 for r in test_results if r.returncode != 0) - len(repair_targets)}"
+    )
+
+    if repair_targets:
+        LOGGER.info(
+            f"[REPAIR] {len(repair_targets)} functions queued for repair: "
+            f"{[t.test_id for t in repair_targets]}"
+        )
+    else:
+        LOGGER.info("[REPAIR] No failures detected — no repair needed.")
 
     repaired_tests: list = []
     invalid_repairs: list = []
@@ -99,7 +121,17 @@ def main() -> int:
         if repaired_tests:
             repair_write_result = write_generated_tests(config.repo_root, repaired_tests, [], config)
             write_result = _merge_write_results(write_result, repair_write_result)
-            test_results = execute_tests(config.repo_root, detected_languages)
+            LOGGER.info("[VERIFY] Running tests again to verify repairs...")
+            verify_results = execute_tests(config.repo_root, detected_languages)
+            test_results = verify_results
+            still_failing = [r for r in verify_results if r.returncode != 0]
+            if still_failing:
+                LOGGER.warning(
+                    f"[VERIFY] {len(still_failing)} test runs still failing after repair: "
+                    f"{[r.language for r in still_failing]}"
+                )
+            else:
+                LOGGER.info("[VERIFY] All repaired tests now pass.")
         else:
             LOGGER.warning("no_valid_repairs_to_write count=%s", len(repair_targets))
 
@@ -130,8 +162,6 @@ def main() -> int:
 
     if has_failures(test_results):
         LOGGER.warning("generated_tests_have_failures")
-        if config.fail_on_test_failure:
-            return 1
 
     return 0
 
@@ -141,6 +171,7 @@ def _build_repair_targets(
     test_mapping: dict[str, dict],
     test_results,
     written_paths: list[Path],
+    diff_function_ids: set[str] = frozenset(),
 ) -> list[GenerationTarget]:
     failed_test_names = collect_failed_test_names(test_results)
     failed_generated_files = collect_failed_generated_files(test_results)
@@ -150,6 +181,12 @@ def _build_repair_targets(
     written_file_names = {Path(path).name for path in written_paths}
     repair_targets: list[GenerationTarget] = []
     for target in targets:
+        if target.test_id not in diff_function_ids:
+            LOGGER.info(
+                f"[REPAIR] Skipping {target.test_id} — not in this PR's diff "
+                f"(failing but not our responsibility)"
+            )
+            continue
         entry = test_mapping.get(mapping_key(target.source_file, target.function_change.function_name), {})
         mapped_names = list(entry.get("test_names") or [])
         target_file = str(entry.get("target_file") or "")

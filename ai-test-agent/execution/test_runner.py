@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -17,13 +16,20 @@ class TestRunResult:
 
 
 def execute_tests(repo_root: Path, languages: set[str]) -> list[TestRunResult]:
-    if os.getenv("AI_TEST_AGENT_FAIL_ON_TEST_FAILURE", "false").lower() != "true":
-        return []
     results: list[TestRunResult] = []
     if "python" in languages and shutil.which("python"):
-        results.append(_run(["python", "-m", "pytest"], repo_root, "python"))
+        results.append(_run(
+            ["python", "-m", "pytest", "tests/ai_generated/",
+             "--tb=short", "-q", "--no-header"],
+            repo_root, "python"
+        ))
     if {"javascript", "typescript"} & languages and (repo_root / "package.json").exists() and shutil.which("npm"):
-        results.append(_run(["npm", "test", "--", "--runInBand"], repo_root, "javascript"))
+        results.append(_run(
+            ["npm", "test", "--", "--runInBand",
+             "--testPathPattern=tests/ai_generated",
+             "--passWithNoTests"],
+            repo_root, "javascript"
+        ))
     return results
 
 

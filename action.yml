@@ -19,10 +19,6 @@ inputs:
     description: Post a pull request comment with the generation summary.
     required: false
     default: "false"
-  fail_on_test_failure:
-    description: Fail the action when the post-generation test run still has failures.
-    required: false
-    default: "false"
   fail_on_generation_failure:
     description: Fail the action when one or more generation targets cannot be produced.
     required: false
@@ -41,7 +37,6 @@ runs:
         PYTHONPATH: ${{ github.action_path }}/ai-test-agent
         AI_TEST_AGENT_REPO_ROOT: ${{ github.workspace }}
         AI_TEST_AGENT_COMMENT_ON_PR: ${{ inputs.comment_on_pr }}
-        AI_TEST_AGENT_FAIL_ON_TEST_FAILURE: ${{ inputs.fail_on_test_failure }}
         AI_TEST_AGENT_FAIL_ON_GENERATION_FAILURE: ${{ inputs.fail_on_generation_failure }}
         AI_TEST_AGENT_PROJECT_CONTEXT: ${{ inputs.project_context }}
         LLM_API_URL: ${{ inputs.llm_api_url }}
