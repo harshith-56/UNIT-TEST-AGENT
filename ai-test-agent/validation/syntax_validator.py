@@ -144,53 +144,21 @@ def _is_truncated(content: str, language: str) -> bool:
         return True
     last = lines[-1].rstrip()
 
-    # Fix 2: Detect genuine mid-word cuts and single-letter orphan lines
-    COMPLETE_ENDINGS = re.compile(
-        r"""(\)|]|}|'|"|None|True|False|pass|continue|break|\d+)\s*$"""
-    )
-    for line in lines:
-        stripped = line.rstrip()
-        if not stripped:
-            continue
-        # Single orphan letter = truncation artifact
-        if re.match(r"^\s*[a-zA-Z]\s*$", stripped):
+    if language in ("javascript", "typescript"):
+        # A complete test file always ends with }) or } closing describe/it/test
+        if not re.match(r"^\s*\}[\s\)]*;?\s*$", last):
             return True
-        # Line ends with bare word chars AND is not a recognized complete ending
-        if re.match(r".*[a-zA-Z_]\w*$", stripped):
-            if not COMPLETE_ENDINGS.search(stripped):
-                # Skip decorator lines — @decorator ends with identifier
-                # but is never a truncation indicator
-                if stripped.lstrip().startswith("@"):
-                    continue
-                # Make sure it's not just a keyword/builtin on its own line
-                bare_keyword = re.match(
-                    r"^\s*(pass|return|continue|break|raise|import\s+[\w,\s]+|from\s+[\w.]+\s+import\s+[\w,\s*]+)\s*$",
-                    stripped,
-                )
-                if not bare_keyword:
-                    return True
-
-    # Fix 3: Trailing operator check — avoid false positive on "is not None"
-    if re.search(r"(==|!=|<=|>=|(?<!\w)=(?!\w)|,|\()\s*$", last):
-        return True
-    if re.search(r"\b(and|or)\s*$", last):
-        return True
-    # "not" only counts if it is the very last word with nothing after
-    if re.match(r".*\bnot\s*$", last):
-        return True
 
     if language == "python":
-        if last.endswith(":"):
+        # Trailing continuation characters indicate mid-statement cut
+        if last.endswith(("\\", ":")):
             return True
-        if re.match(r"^\s*(def|class|async\s+def|async\s+for|async\s+with)\s*$", last):
+        if re.search(r"(==|!=|<=|>=|(?<!\w)=(?!\w)|,|\()\s*$", last):
+            return True
+        if re.search(r"\b(and|or|not)\s*$", last):
             return True
 
-    if language in ("javascript", "typescript"):
-        if re.match(r"^\s*(function|=>|async\s+function)\s*$", last):
-            return True
-
-    # Fix 1: Only flag severe bracket imbalance (> 3) to avoid false positives
-    # from unmatched brackets inside string literals
+    # Severe bracket imbalance (> 3 accounts for strings containing brackets)
     try:
         opens = content.count("(") + content.count("[") + content.count("{")
         closes = content.count(")") + content.count("]") + content.count("}")
