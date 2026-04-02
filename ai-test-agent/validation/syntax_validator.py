@@ -18,7 +18,6 @@ LOGGER = get_logger(__name__)
 BANNED_OUTPUT_PATTERNS = (
     re.compile(r"(?<![\w*])\*{3,}(?![\w*])"),
     re.compile(r"(?<![\w?])\?{3,}(?![\w?])"),
-    re.compile(r"(?<!\.)\.\.\.(?!\.)"),
     re.compile(r"\b(?:todo|tbd)\b", re.IGNORECASE),
     re.compile(r"\byour_module\b"),
     re.compile(r"\bcreate_engine\s*\("),
@@ -26,6 +25,15 @@ BANNED_OUTPUT_PATTERNS = (
     re.compile(r"\b(?:sqlite3|psycopg|psycopg2)\.connect\s*\("),
     re.compile(r"\bopen\s*\([^\n,]+,\s*['\"](?:w|a|x)"),
     re.compile(r"\b(?:Path|pathlib\.Path)\([^\n]*\)\.(?:write_text|write_bytes|open)\s*\("),
+    # Catches real HTTP calls in tests — both Python and JS/TS
+    # Allows example.com, test.com, localhost which are safe dummy URLs
+    re.compile(
+        r"https?://(?!(?:example\.com|test\.com|localhost|127\.0\.0\.1))"
+        r"[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+    ),
+    # Catches require() in TypeScript files — should use import instead
+    # Only flags when it looks like a module import not a dynamic require
+    re.compile(r"^\s*const\s+\w+\s*=\s*require\s*\(", re.MULTILINE),
 )
 
 

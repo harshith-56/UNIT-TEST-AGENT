@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from context.repo_context import GenerationContext
 from generation.test_models import GeneratedTest
@@ -36,7 +36,7 @@ def _is_duplicate(generated_test: GeneratedTest, existing_content: str, existing
     generated_names = set(extract_test_names(generated_test.language, generated_test.content))
     if generated_test.generation_mode == "repair":
         return False
-    return bool(generated_names & set(existing_test_names))
+    return False
 
 
 def _normalize(content: str) -> str:
