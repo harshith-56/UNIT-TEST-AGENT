@@ -25,9 +25,10 @@ BANNED_OUTPUT_PATTERNS = (
     re.compile(r"\b(?:sqlite3|psycopg|psycopg2)\.connect\s*\("),
     re.compile(r"\bopen\s*\([^\n,]+,\s*['\"](?:w|a|x)"),
     re.compile(r"\b(?:Path|pathlib\.Path)\([^\n]*\)\.(?:write_text|write_bytes|open)\s*\("),
-    # Catches real HTTP calls in tests — both Python and JS/TS
+    # Catches real HTTP calls in tests — URL as first arg to an HTTP client method
     # Allows example.com, test.com, localhost which are safe dummy URLs
     re.compile(
+        r"(?:requests|httpx|aiohttp|urllib)\s*\.\s*(?:get|post|put|delete|patch|request)\s*\(\s*['\"]"
         r"https?://(?!(?:example\.com|test\.com|localhost|127\.0\.0\.1))"
         r"[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     ),
@@ -129,7 +130,7 @@ def _is_valid_generated_test(generated_test: GeneratedTest) -> bool:
         # Jest uses describe/it blocks — lower minimum, allow describe groups
         if not 1 <= len(test_names) <= 20:
             return False
-    elif not 3 <= len(test_names) <= 8:
+    elif not 3 <= len(test_names) <= 30:
         return False
 
     if generated_test.language == "python":

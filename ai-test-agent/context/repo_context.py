@@ -106,7 +106,7 @@ def build_generation_context(
                     language=changed_file.language,
                     function_change=function_change,
                     test_id=test_id,
-                    generation_mode="replace" if function_change.change_type == "signature_change" else "append",
+                    generation_mode="replace",
                     project_rules=project_context.combined_rules(),
                     pr_rules=pr_context.combined_rules(),
                     dependencies=extract_dependencies(

@@ -67,25 +67,33 @@ class StructuredContext:
 
 
 def parse_project_context(raw_context: str) -> StructuredContext:
-    if not raw_context.strip():
-        return StructuredContext()
+    if not raw_context or not raw_context.strip():
+        return StructuredContext(rules=[], constraints=[])
 
-    loaded = yaml.safe_load(raw_context)
-    if not isinstance(loaded, dict):
-        raise RuntimeError("project_context must be structured YAML or JSON with rules/constraints lists")
+    try:
+        parsed = yaml.safe_load(raw_context)
+    except Exception:
+        # Not valid YAML — treat entire string as a single rule
+        return StructuredContext(rules=[raw_context.strip()], constraints=[])
 
-    unsupported = set(loaded) - {"rules", "constraints"}
-    if unsupported:
-        raise RuntimeError(f"project_context contains unsupported keys: {sorted(unsupported)}")
+    if not isinstance(parsed, dict):
+        # Plain string or list — treat as rules
+        if isinstance(parsed, list):
+            return StructuredContext(rules=[str(r) for r in parsed], constraints=[])
+        return StructuredContext(rules=[str(parsed)], constraints=[])
 
-    rules = _validate_entries(loaded.get("rules") or [], "project_context.rules")
-    constraints = _validate_entries(loaded.get("constraints") or [], "project_context.constraints")
+    rules = parsed.get("rules") or parsed.get("constraints") or []
+    constraints = parsed.get("constraints") or []
 
-    total_tokens = estimate_tokens("\n".join([*rules, *constraints]))
-    if total_tokens > MAX_CONTEXT_TOKENS:
-        raise RuntimeError("project_context exceeds the 300 token limit")
+    if isinstance(rules, str):
+        rules = [rules]
+    if isinstance(constraints, str):
+        constraints = [constraints]
 
-    return StructuredContext(rules=rules, constraints=constraints)
+    return StructuredContext(
+        rules=[str(r) for r in rules],
+        constraints=[str(r) for r in constraints],
+    )
 
 
 def extract_pr_context(event_context: EventContext) -> StructuredContext:

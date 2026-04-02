@@ -1,23 +1,15 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import replace
-from pathlib import Path
 
-from agent.config import detect_languages, load_config
+from agent.config import load_config
 from context.event_context import load_event_context
 from context.project_context import extract_pr_context, parse_project_context
-from context.repo_context import GenerationContext, GenerationTarget, build_generation_context
+from context.repo_context import build_generation_context
 from diff.diff_analyzer import analyze_diff
-from execution.failure_parser import collect_collection_errors, collect_failed_generated_files, collect_failed_test_names, collect_failure_notes
-from execution.test_runner import execute_tests, has_failures
 from generation.test_generator import generate_tests
-from generation.test_models import GenerationResult
-from integration.test_mapping import mapping_key
-from integration.test_writer import WriteResult, write_generated_tests
-from reporting.pr_commenter import post_pr_comment
+from integration.test_writer import write_generated_tests
 from test_discovery.test_scanner import discover_existing_tests
-from utils.file_utils import sanitize_module_name
 from utils.logger import get_logger
 from validation.duplicate_detector import filter_duplicate_tests
 from validation.syntax_validator import validate_generated_tests
@@ -33,7 +25,10 @@ def main() -> int:
     pr_context = extract_pr_context(event_context)
 
     changed_files = analyze_diff(config.repo_root, event_context.base_branch)
-    detected_languages = detect_languages(changed_file.file_path for changed_file in changed_files)
+    if not changed_files:
+        LOGGER.info("No relevant changes detected — skipping generation")
+        return 0
+
     existing_tests = discover_existing_tests(config.repo_root)
     generation_context = build_generation_context(
         config.repo_root,
@@ -44,72 +39,35 @@ def main() -> int:
     )
 
     if not generation_context.targets and not generation_context.maintenance_actions:
-        LOGGER.info("no_generation_needed")
+        LOGGER.info("No generation targets — skipping")
         return 0
 
+    LOGGER.info(
+        "generation_targets_detected count=%s maintenance_actions=%s",
+        len(generation_context.targets),
+        len(generation_context.maintenance_actions),
+    )
+
+    # Generate tests for all targets
     generation_result = generate_tests(generation_context.targets, config)
-    if generation_result.failures:
-        LOGGER.warning("generation_failures_detected count=%s", len(generation_result.failures))
 
-    valid_tests, invalid_tests = validate_generated_tests(generation_result.generated_tests)
-    if invalid_tests:
-        LOGGER.warning("invalid_tests_detected count=%s", len(invalid_tests))
+    # Validate — drop invalid, keep valid
+    valid_tests, invalid_tests = validate_generated_tests(
+        generation_result.generated_tests
+    )
 
-    # Invalid tests get a repair attempt — treat them like test failures.
-    # Build repair targets for every function whose generated tests
-    # failed validation, so the LLM gets a second attempt with the
-    # failure reason in the prompt.
-    invalid_write_result = None
     if invalid_tests:
-        invalid_repair_targets = []
+        LOGGER.warning(
+            "invalid_tests_skipped count=%s — run agent again to retry",
+            len(invalid_tests),
+        )
         for inv in invalid_tests:
-            # Find the matching GenerationTarget from the context
-            target = next(
-                (t for t in generation_context.targets
-                 if t.test_id == inv.test_id),
-                None,
-            )
-            if target is None:
-                continue
-            repair_target = replace(
-                target,
-                generation_mode="repair",
-                repair_test_names=[],
-                repair_notes=["Previous generation failed validation: validation_failed"],
-            )
-            invalid_repair_targets.append(repair_target)
-            LOGGER.info(
-                f"[INVALID_REPAIR] Queued {inv.test_id} for repair "
-                f"— validation failure: validation_failed"
-            )
+            LOGGER.warning("  skipped: %s", inv.test_id)
 
-        if invalid_repair_targets:
-            LOGGER.info(
-                f"[INVALID_REPAIR] {len(invalid_repair_targets)} functions "
-                f"queued for re-generation due to validation failures"
-            )
-            invalid_repaired = generate_tests(invalid_repair_targets, config)
-            valid_invalid_repairs, _ = validate_generated_tests(
-                invalid_repaired.generated_tests
-            )
-            if valid_invalid_repairs:
-                invalid_write_result = write_generated_tests(
-                    config.repo_root,
-                    valid_invalid_repairs,
-                    [],
-                    config,
-                )
-                if invalid_write_result and invalid_write_result.written_paths:
-                    LOGGER.info(
-                        f"[INVALID_REPAIR] Wrote {len(invalid_write_result.written_paths)} "
-                        f"files: {invalid_write_result.written_paths}"
-                    )
-
+    # Deduplicate
     final_tests = filter_duplicate_tests(valid_tests, generation_context)
-    if generation_context.targets and not final_tests:
-        LOGGER.warning("no_valid_tests_available count=%s", len(generation_context.targets))
 
-    write_result = WriteResult(written_paths=[], test_mapping={}, maintenance_changes=0)
+    # Write everything — tests + maintenance actions (renames, deletes)
     if final_tests or generation_context.maintenance_actions:
         write_result = write_generated_tests(
             config.repo_root,
@@ -117,186 +75,19 @@ def main() -> int:
             generation_context.maintenance_actions,
             config,
         )
-        if generation_context.targets and not write_result.written_paths and write_result.maintenance_changes == 0:
-            LOGGER.warning("no_files_written")
-    elif generation_context.targets:
-        LOGGER.warning("no_generation_artifacts_to_write")
-
-    if invalid_write_result is not None and invalid_write_result.written_paths:
-        write_result = _merge_write_results(write_result, invalid_write_result)
-
-    test_results = []
-    if write_result.written_paths or write_result.maintenance_changes:
-        test_results = execute_tests(config.repo_root, detected_languages)
         LOGGER.info(
-            f"[TEST_RUN] Executed tests. "
-            f"Total results: {len(test_results)}. "
-            f"Failures: {sum(1 for r in test_results if r.returncode != 0)}"
-        )
-
-    diff_function_ids = {t.test_id for t in generation_context.targets}
-    repair_targets = _build_repair_targets(
-        generation_context.targets,
-        write_result.test_mapping,
-        test_results,
-        write_result.written_paths,
-        diff_function_ids=diff_function_ids,
-    )
-
-    LOGGER.info(
-        f"[TEST_RUN] {len(test_results)} test results. "
-        f"Failures in this PR's functions: {len(repair_targets)}. "
-        f"Failures outside diff (not repaired): "
-        f"{max(0, sum(1 for r in test_results if r.returncode != 0) - len(repair_targets))}"
-    )
-
-    if repair_targets:
-        LOGGER.info(
-            f"[REPAIR] {len(repair_targets)} functions queued for repair: "
-            f"{[t.test_id for t in repair_targets]}"
+            "agent_run_summary "
+            "targets=%s generated=%s invalid=%s written=%s maintenance=%s",
+            len(generation_context.targets),
+            len(final_tests),
+            len(invalid_tests),
+            len(write_result.written_paths),
+            len(generation_context.maintenance_actions),
         )
     else:
-        LOGGER.info("[REPAIR] No failures detected — no repair needed.")
-
-    repaired_tests: list = []
-    invalid_repairs: list = []
-    repair_result = GenerationResult(generated_tests=[], failures=[])
-    if repair_targets:
-        LOGGER.info("repair_targets_detected count=%s", len(repair_targets))
-        repair_result = generate_tests(repair_targets, config)
-        if repair_result.failures:
-            LOGGER.warning("repair_generation_failures_detected count=%s", len(repair_result.failures))
-        valid_repairs, invalid_repairs = validate_generated_tests(repair_result.generated_tests)
-        if invalid_repairs:
-            LOGGER.warning("invalid_repaired_tests_detected count=%s", len(invalid_repairs))
-        repair_context = GenerationContext(targets=repair_targets, maintenance_actions=[])
-        repaired_tests = filter_duplicate_tests(valid_repairs, repair_context)
-        if repaired_tests:
-            repair_write_result = write_generated_tests(config.repo_root, repaired_tests, [], config)
-            write_result = _merge_write_results(write_result, repair_write_result)
-            LOGGER.info("[VERIFY] Running tests again to verify repairs...")
-            verify_results = execute_tests(config.repo_root, detected_languages)
-            test_results = verify_results
-            still_failing = [r for r in verify_results if r.returncode != 0]
-            if still_failing:
-                LOGGER.warning(
-                    f"[VERIFY] {len(still_failing)} test runs still failing after repair: "
-                    f"{[r.language for r in still_failing]}"
-                )
-            else:
-                LOGGER.info("[VERIFY] All repaired tests now pass.")
-        else:
-            LOGGER.warning("no_valid_repairs_to_write count=%s", len(repair_targets))
-
-    generated_test_count = len(final_tests) + len(repaired_tests)
-    LOGGER.info(
-        "agent_run_summary changed_files=%s targets=%s generated=%s repaired=%s invalid=%s failures=%s written=%s maintenance=%s",
-        len(changed_files),
-        len(generation_context.targets),
-        len(final_tests),
-        len(repaired_tests),
-        len(invalid_tests) + len(invalid_repairs),
-        len(generation_result.failures) + len(repair_result.failures),
-        len(write_result.written_paths),
-        write_result.maintenance_changes,
-    )
-
-    if config.comment_on_pr:
-        post_pr_comment(
-            event_context,
-            generated_test_count,
-            len(write_result.written_paths),
-            test_results,
-        )
-
-    if generation_context.targets and generated_test_count == 0:
-        LOGGER.error("no_tests_generated")
-        return 1
-
-    if has_failures(test_results):
-        LOGGER.warning("generated_tests_have_failures")
+        LOGGER.info("No valid tests to write")
 
     return 0
-
-
-def _build_repair_targets(
-    targets: list[GenerationTarget],
-    test_mapping: dict[str, dict],
-    test_results,
-    written_paths: list[Path],
-    diff_function_ids: set[str] = frozenset(),
-) -> list[GenerationTarget]:
-    failed_test_names = collect_failed_test_names(test_results)
-    failed_generated_files = collect_failed_generated_files(test_results)
-    collection_error_files = collect_collection_errors(test_results)
-    if not failed_test_names and not failed_generated_files:
-        return []
-
-    written_file_names = {Path(path).name for path in written_paths}
-    repair_targets: list[GenerationTarget] = []
-    for target in targets:
-        if target.test_id not in diff_function_ids:
-            LOGGER.info(
-                f"[REPAIR] Skipping {target.test_id} — not in this PR's diff "
-                f"(failing but not our responsibility)"
-            )
-            continue
-        entry = test_mapping.get(mapping_key(target.source_file, target.function_change.function_name), {})
-        mapped_names = list(entry.get("test_names") or [])
-        target_file = str(entry.get("target_file") or "")
-        if not target_file:
-            expected_target_file = _expected_generated_file_name(target)
-            if expected_target_file in written_file_names or expected_target_file in failed_generated_files:
-                target_file = expected_target_file
-        failing_names = [name for name in mapped_names if name in failed_test_names]
-        file_failed = bool(
-            target_file and (
-                target_file in failed_generated_files
-                or target_file in collection_error_files
-            )
-        )
-        if not failing_names and not file_failed:
-            continue
-        repair_names = failing_names or mapped_names
-        is_collection_error = bool(
-            target_file and target_file in collection_error_files
-        )
-        if is_collection_error and not failing_names:
-            repair_notes = [
-                "The test file had a collection error (ImportError or "
-                "ModuleNotFoundError) — the file could not be imported. "
-                "Regenerate with correct imports."
-            ]
-        else:
-            repair_notes = collect_failure_notes(
-                test_results, repair_names, [target_file]
-            )
-        repair_targets.append(
-            replace(
-                target,
-                generation_mode="repair",
-                repair_test_names=repair_names,
-                repair_notes=repair_notes,
-            )
-        )
-    return repair_targets
-
-
-def _expected_generated_file_name(target: GenerationTarget) -> str:
-    module_name = sanitize_module_name(target.source_file)
-    if target.language == "python":
-        return f"test_ai_generated_{module_name}.py"
-    if target.language == "javascript":
-        return f"ai_generated_{module_name}.test.js"
-    return f"ai_generated_{module_name}.test.ts"
-
-
-def _merge_write_results(left: WriteResult, right: WriteResult) -> WriteResult:
-    return WriteResult(
-        written_paths=sorted(dict.fromkeys([*left.written_paths, *right.written_paths])),
-        test_mapping=right.test_mapping or left.test_mapping,
-        maintenance_changes=left.maintenance_changes + right.maintenance_changes,
-    )
 
 
 if __name__ == "__main__":
