@@ -9,7 +9,7 @@ from context.event_context import load_event_context
 from context.project_context import extract_pr_context, parse_project_context
 from context.repo_context import GenerationContext, GenerationTarget, build_generation_context
 from diff.diff_analyzer import analyze_diff
-from execution.failure_parser import collect_failed_generated_files, collect_failed_test_names, collect_failure_notes
+from execution.failure_parser import collect_collection_errors, collect_failed_generated_files, collect_failed_test_names, collect_failure_notes
 from execution.test_runner import execute_tests, has_failures
 from generation.test_generator import generate_tests
 from generation.test_models import GenerationResult
@@ -55,6 +55,56 @@ def main() -> int:
     if invalid_tests:
         LOGGER.warning("invalid_tests_detected count=%s", len(invalid_tests))
 
+    # Invalid tests get a repair attempt — treat them like test failures.
+    # Build repair targets for every function whose generated tests
+    # failed validation, so the LLM gets a second attempt with the
+    # failure reason in the prompt.
+    invalid_write_result = None
+    if invalid_tests:
+        invalid_repair_targets = []
+        for inv in invalid_tests:
+            # Find the matching GenerationTarget from the context
+            target = next(
+                (t for t in generation_context.targets
+                 if t.test_id == inv.test_id),
+                None,
+            )
+            if target is None:
+                continue
+            repair_target = replace(
+                target,
+                generation_mode="repair",
+                repair_test_names=[],
+                repair_notes=["Previous generation failed validation: validation_failed"],
+            )
+            invalid_repair_targets.append(repair_target)
+            LOGGER.info(
+                f"[INVALID_REPAIR] Queued {inv.test_id} for repair "
+                f"— validation failure: validation_failed"
+            )
+
+        if invalid_repair_targets:
+            LOGGER.info(
+                f"[INVALID_REPAIR] {len(invalid_repair_targets)} functions "
+                f"queued for re-generation due to validation failures"
+            )
+            invalid_repaired = generate_tests(invalid_repair_targets, config)
+            valid_invalid_repairs, _ = validate_generated_tests(
+                invalid_repaired.generated_tests
+            )
+            if valid_invalid_repairs:
+                invalid_write_result = write_generated_tests(
+                    config.repo_root,
+                    valid_invalid_repairs,
+                    [],
+                    config,
+                )
+                if invalid_write_result and invalid_write_result.written_paths:
+                    LOGGER.info(
+                        f"[INVALID_REPAIR] Wrote {len(invalid_write_result.written_paths)} "
+                        f"files: {invalid_write_result.written_paths}"
+                    )
+
     final_tests = filter_duplicate_tests(valid_tests, generation_context)
     if generation_context.targets and not final_tests:
         LOGGER.warning("no_valid_tests_available count=%s", len(generation_context.targets))
@@ -71,6 +121,9 @@ def main() -> int:
             LOGGER.warning("no_files_written")
     elif generation_context.targets:
         LOGGER.warning("no_generation_artifacts_to_write")
+
+    if invalid_write_result is not None and invalid_write_result.written_paths:
+        write_result = _merge_write_results(write_result, invalid_write_result)
 
     test_results = []
     if write_result.written_paths or write_result.maintenance_changes:
@@ -94,7 +147,7 @@ def main() -> int:
         f"[TEST_RUN] {len(test_results)} test results. "
         f"Failures in this PR's functions: {len(repair_targets)}. "
         f"Failures outside diff (not repaired): "
-        f"{sum(1 for r in test_results if r.returncode != 0) - len(repair_targets)}"
+        f"{max(0, sum(1 for r in test_results if r.returncode != 0) - len(repair_targets))}"
     )
 
     if repair_targets:
@@ -175,6 +228,7 @@ def _build_repair_targets(
 ) -> list[GenerationTarget]:
     failed_test_names = collect_failed_test_names(test_results)
     failed_generated_files = collect_failed_generated_files(test_results)
+    collection_error_files = collect_collection_errors(test_results)
     if not failed_test_names and not failed_generated_files:
         return []
 
@@ -195,16 +249,34 @@ def _build_repair_targets(
             if expected_target_file in written_file_names or expected_target_file in failed_generated_files:
                 target_file = expected_target_file
         failing_names = [name for name in mapped_names if name in failed_test_names]
-        file_failed = bool(target_file and target_file in failed_generated_files)
+        file_failed = bool(
+            target_file and (
+                target_file in failed_generated_files
+                or target_file in collection_error_files
+            )
+        )
         if not failing_names and not file_failed:
             continue
         repair_names = failing_names or mapped_names
+        is_collection_error = bool(
+            target_file and target_file in collection_error_files
+        )
+        if is_collection_error and not failing_names:
+            repair_notes = [
+                "The test file had a collection error (ImportError or "
+                "ModuleNotFoundError) — the file could not be imported. "
+                "Regenerate with correct imports."
+            ]
+        else:
+            repair_notes = collect_failure_notes(
+                test_results, repair_names, [target_file]
+            )
         repair_targets.append(
             replace(
                 target,
                 generation_mode="repair",
                 repair_test_names=repair_names,
-                repair_notes=collect_failure_notes(test_results, repair_names, [target_file] if target_file else []),
+                repair_notes=repair_notes,
             )
         )
     return repair_targets

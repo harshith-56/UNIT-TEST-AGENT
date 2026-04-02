@@ -29,6 +29,24 @@ def collect_failed_test_names(results: list[TestRunResult]) -> set[str]:
     return failed
 
 
+def collect_collection_errors(test_results: list) -> set[str]:
+    """
+    Returns source file stems that had pytest collection errors
+    (ImportError, ModuleNotFoundError, SyntaxError during collection).
+    These are different from individual test failures — the entire
+    file failed to import.
+    """
+    collection_error_files: set[str] = set()
+    _COLLECTION_ERROR = re.compile(
+        r"ERROR\s+collecting\s+.*?(?P<file>test_ai_generated_\w+\.py)"
+    )
+    for result in test_results:
+        output = (result.stdout or "") + (result.stderr or "")
+        for m in _COLLECTION_ERROR.finditer(output):
+            collection_error_files.add(m.group("file"))
+    return collection_error_files
+
+
 def collect_failed_generated_files(results: list[TestRunResult]) -> set[str]:
     failed_files: set[str] = set()
     for result in results:
