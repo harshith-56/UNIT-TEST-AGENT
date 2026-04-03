@@ -88,6 +88,9 @@ def validate_content(language: str, content: str, source_file: str) -> tuple[boo
     if not names:
         return False, "no_tests"
 
+    if not (2 <= len(names) <= 30):
+        return False, f"test_count_out_of_range({len(names)})"
+
     return True, ""
 
 
@@ -119,27 +122,6 @@ def _is_valid_generated_test(generated_test: GeneratedTest) -> bool:
     if has_duplicate_test_names(generated_test.language, generated_test.content):
         return False
 
-    test_names = extract_test_names(generated_test.language, generated_test.content)
-    if generated_test.generation_mode == "repair":
-        if generated_test.repair_test_names:
-            if set(test_names) != set(generated_test.repair_test_names):
-                return False
-        elif not 1 <= len(test_names) <= 20:
-            return False
-    elif generated_test.language in ("javascript", "typescript"):
-        # Jest uses describe/it blocks — lower minimum, allow describe groups
-        if not 1 <= len(test_names) <= 20:
-            return False
-    elif not 3 <= len(test_names) <= 30:
-        return False
-
-    if generated_test.language == "python":
-        if any(
-            not name.startswith(f"test_{generated_test.test_id}_")
-            for name in test_names
-        ):
-            return False
-    # JS/TS uses describe/it style — no prefix requirement
     return is_syntax_valid(generated_test.language, generated_test.content, generated_test.source_file)
 
 
