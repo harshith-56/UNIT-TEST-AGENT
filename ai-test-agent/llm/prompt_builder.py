@@ -191,8 +191,8 @@ def build_prompt(llm_input: LLMInput) -> str:
     import_hints = "\n".join(f"- {hint}" for hint in llm_input.import_hints) or "- None"
     existing_tests = llm_input.existing_tests.strip() or "None"
 
-    project_context = "\n".join(f"- {r}" for r in llm_input.project_rules) or "- None"
-    pr_context = "\n".join(f"- {r}" for r in llm_input.pr_rules) or "- None"
+    project_context = "\n".join(llm_input.project_rules).strip() or "None"
+    pr_context = "\n".join(llm_input.pr_rules).strip() or "None"
 
     is_repair = "Repair only these failing tests:" in existing_tests
 
