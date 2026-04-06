@@ -623,3 +623,251 @@ def _is_ignored_non_source_path(file_path: str) -> bool:
     normalized = file_path.replace("\\", "/").lower()
     return any(pattern.search(normalized) for pattern in _CONFIG_FILE_PATTERNS)
 
+
+# ── extract_functions_from_source helpers ────────────────────────────────────
+
+_TRIVIAL_DUNDER_METHODS: frozenset[str] = frozenset({
+    "__repr__", "__str__", "__eq__", "__hash__",
+    "__lt__", "__le__", "__gt__", "__ge__", "__ne__",
+    "__len__", "__bool__",
+})
+_TRIVIAL_SERIALIZATION_NAMES: frozenset[str] = frozenset({
+    "to_dict", "from_dict", "serialize", "deserialize",
+})
+_JS_FUNC_DECL_PATTERN = re.compile(
+    r"^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(",
+    re.MULTILINE,
+)
+_JS_ARROW_FUNC_PATTERN = re.compile(
+    r"^[ \t]*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[\w$]+)\s*=>",
+    re.MULTILINE,
+)
+_JS_METHOD_PATTERN = re.compile(
+    r"^[ \t]*(?:(?:public|private|protected|static|abstract|override|async|readonly|get|set)\s+)*(\w+)\s*\([^\n{]*\)[^\n{]*\{",
+    re.MULTILINE,
+)
+_JS_CLASS_DEF_PATTERN = re.compile(
+    r"(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)",
+    re.MULTILINE,
+)
+_JS_THIS_ASSIGN_PATTERN = re.compile(r"^\s*this\.\w+\s*=\s*[^;]+;?\s*$")
+_JS_KEYWORD_NAMES: frozenset[str] = frozenset({
+    "if", "for", "while", "switch", "catch", "else", "try", "finally",
+    "do", "return", "new", "delete", "typeof", "void", "instanceof",
+})
+
+
+def _is_trivial_init(node) -> bool:
+    for stmt in node.body:
+        if not isinstance(stmt, ast.Assign) and \
+           not isinstance(stmt, ast.AnnAssign) and \
+           not isinstance(stmt, ast.Expr):
+            return False
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if not (isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == 'self'):
+                    return False
+    return True
+
+
+def _is_trivial_serialization(node) -> bool:
+    for stmt in node.body:
+        if isinstance(stmt, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
+            return False
+    return True
+
+
+def _has_trivial_body(node) -> bool:
+    for stmt in node.body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if isinstance(stmt, ast.Return) and stmt.value is None:
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue  # docstring or ellipsis
+        return False
+    return True
+
+
+def _build_js_class_line_map(source_code: str, lines: list[str]) -> dict[int, str]:
+    class_map: dict[int, str] = {}
+    for m in _JS_CLASS_DEF_PATTERN.finditer(source_code):
+        class_name = m.group(1)
+        brace_pos = source_code.find("{", m.end())
+        if brace_pos == -1:
+            continue
+        depth = 0
+        end_pos = brace_pos
+        for i in range(brace_pos, len(source_code)):
+            if source_code[i] == "{":
+                depth += 1
+            elif source_code[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end_pos = i
+                    break
+        start_line = source_code.count("\n", 0, brace_pos) + 1
+        end_line = source_code.count("\n", 0, end_pos) + 1
+        for ln in range(start_line + 1, end_line + 1):
+            class_map[ln] = class_name
+    return class_map
+
+
+def _find_js_function_end(source_code: str, start_pos: int, total_lines: int) -> int:
+    brace_pos = source_code.find("{", start_pos)
+    if brace_pos == -1:
+        newline_pos = source_code.find("\n", start_pos)
+        end_pos = newline_pos if newline_pos != -1 else len(source_code) - 1
+        return source_code.count("\n", 0, end_pos) + 1
+    depth = 0
+    for i in range(brace_pos, len(source_code)):
+        if source_code[i] == "{":
+            depth += 1
+        elif source_code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source_code.count("\n", 0, i) + 1
+    return total_lines
+
+
+def _is_trivial_js_constructor(source: str) -> bool:
+    body_lines = source.splitlines()[1:-1]
+    if not body_lines:
+        return True
+    return all(
+        not line.strip() or bool(_JS_THIS_ASSIGN_PATTERN.match(line))
+        for line in body_lines
+    )
+
+
+def _extract_python_functions(source_code: str) -> list:
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        return []
+
+    parent_map: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent_map[id(child)] = node
+
+    lines = source_code.splitlines()
+    results = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+
+        func_name = node.name
+
+        # Find immediate enclosing class; stop at nested-function boundaries
+        class_name = ""
+        parent = parent_map.get(id(node))
+        while parent is not None:
+            if isinstance(parent, ast.ClassDef):
+                class_name = parent.name
+                break
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                break
+            parent = parent_map.get(id(parent))
+
+        if func_name in _TRIVIAL_DUNDER_METHODS:
+            continue
+        if func_name == "__init__" and _is_trivial_init(node):
+            continue
+        if func_name in _TRIVIAL_SERIALIZATION_NAMES and _is_trivial_serialization(node):
+            continue
+        if _has_trivial_body(node):
+            continue
+
+        func_source = "\n".join(lines[node.lineno - 1 : node.end_lineno])
+        qualified_name = f"{class_name}_{func_name}" if class_name else func_name
+        signature = lines[node.lineno - 1].strip()
+
+        results.append(
+            FunctionChange(
+                function_name=qualified_name,
+                start_line=node.lineno,
+                end_line=node.end_lineno,
+                source_code=func_source,
+                context_code="",
+                signature=signature,
+                change_type="added",
+                enclosing_class_name=class_name if class_name else None,
+                has_behavioral_change=True,
+            )
+        )
+
+    results.sort(key=lambda fc: fc.start_line)
+    return results
+
+
+def _extract_js_ts_functions(source_code: str) -> list:
+    lines = source_code.splitlines()
+    class_at_line = _build_js_class_line_map(source_code, lines)
+    seen_start_lines: set[int] = set()
+    results = []
+
+    def add_match(match: re.Match, name: str, is_method: bool = False) -> None:
+        start_line = source_code.count("\n", 0, match.start()) + 1
+        if start_line in seen_start_lines:
+            return
+        class_name = class_at_line.get(start_line, "")
+        if is_method and not class_name:
+            return
+        if name == "constructor":
+            end_ln = _find_js_function_end(source_code, match.start(), len(lines))
+            body_src = "\n".join(lines[start_line - 1 : end_ln])
+            if _is_trivial_js_constructor(body_src):
+                return
+        seen_start_lines.add(start_line)
+        end_line = _find_js_function_end(source_code, match.start(), len(lines))
+        func_source = "\n".join(lines[start_line - 1 : end_line])
+        qualified_name = f"{class_name}_{name}" if class_name else name
+        results.append(
+            FunctionChange(
+                function_name=qualified_name,
+                start_line=start_line,
+                end_line=end_line,
+                source_code=func_source,
+                context_code="",
+                signature=lines[start_line - 1].strip(),
+                change_type="added",
+                enclosing_class_name=class_name if class_name else None,
+                has_behavioral_change=True,
+            )
+        )
+
+    for m in _JS_FUNC_DECL_PATTERN.finditer(source_code):
+        add_match(m, m.group(1))
+
+    for m in _JS_ARROW_FUNC_PATTERN.finditer(source_code):
+        add_match(m, m.group(1))
+
+    for m in _JS_METHOD_PATTERN.finditer(source_code):
+        name = m.group(1)
+        if name in _JS_KEYWORD_NAMES:
+            continue
+        add_match(m, name, is_method=True)
+
+    results.sort(key=lambda fc: fc.start_line)
+    return results
+
+
+def extract_functions_from_source(
+    source_code: str,
+    file_path: str,
+    language: str,
+) -> list:
+    """
+    Extract all meaningful functions from raw source code
+    without needing a git diff. Used for benchmark evaluation.
+    Returns list of FunctionChange objects with change_type='added'.
+    Skips trivial functions with no testable logic.
+    """
+    if language == "python":
+        return _extract_python_functions(source_code)
+    return _extract_js_ts_functions(source_code)
+
