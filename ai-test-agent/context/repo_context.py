@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import ast as _ast
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import re
 
@@ -100,6 +101,15 @@ def build_generation_context(
             if not should_generate_tests(function_change):
                 continue
 
+            if function_change.enclosing_class_name:
+                class_src = _extract_class_source(
+                    source_text,
+                    function_change.enclosing_class_name,
+                    changed_file.language,
+                )
+                if class_src:
+                    function_change = replace(function_change, source_code=class_src)
+
             targets.append(
                 GenerationTarget(
                     source_file=changed_file.file_path,
@@ -179,3 +189,56 @@ def _test_pattern(language: str, name_pattern: str) -> str:
     if language == "python":
         return rf"^def\s+{name_pattern}\(.*?(?=^def\s+test_|\Z)"
     return rf"^\s*(?:it|test)\(\s*['\"`]{name_pattern}['\"`].*?(?=^\s*(?:it|test)\(\s*['\"`]test_|\Z)"
+
+
+def _extract_class_source(file_source: str, class_name: str, language: str) -> str:
+    """
+    Extract the complete class definition from file source.
+    Returns empty string if not found — caller falls back to
+    the original function source.
+    """
+    if language == "python":
+        return _extract_python_class(file_source, class_name)
+    return _extract_js_class(file_source, class_name)
+
+
+def _extract_python_class(source: str, class_name: str) -> str:
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return ""
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ClassDef) and node.name == class_name:
+            lines = source.splitlines()
+            start = node.lineno - 1       # ast is 1-based
+            end = node.end_lineno         # inclusive
+            return "\n".join(lines[start:end])
+    return ""
+
+
+def _extract_js_class(source: str, class_name: str) -> str:
+    # Matches: [export] [default] [abstract] class ClassName
+    #          [extends X] [implements Y, Z] {
+    # Works for .js .ts .jsx .tsx
+    pattern = re.compile(
+        rf"(?:export\s+)?(?:default\s+)?(?:abstract\s+)?"
+        rf"class\s+{re.escape(class_name)}"
+        rf"(?:\s+extends\s+[\w.<>, ]+?)?"
+        rf"(?:\s+implements\s+[\w.<>, ]+?)?"
+        rf"\s*\{{",
+        re.MULTILINE,
+    )
+    m = pattern.search(source)
+    if not m:
+        return ""
+    start = m.start()
+    # Walk forward counting braces to find matching closing }
+    depth = 0
+    for j in range(m.end() - 1, len(source)):
+        if source[j] == "{":
+            depth += 1
+        elif source[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:j + 1]
+    return source[start:]  # fallback: rest of file

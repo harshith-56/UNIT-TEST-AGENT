@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import re
-import ast
 from dataclasses import dataclass
 from pathlib import Path
 
-from context.token_budget import MAX_DEPENDENCIES, estimate_tokens
+from context.token_budget import MAX_DEPENDENCIES
 from diff.diff_models import FunctionChange, ParsedFunction
 from languages.javascript.js_parser import parse_functions as parse_js_functions
 from languages.python.python_parser import parse_functions as parse_python_functions
@@ -87,28 +86,76 @@ def extract_dependencies(
             candidates[scored.function_name] = scored
 
     selected = sorted(candidates.values(), key=lambda item: (-item.score, item.function_name))[:max_dependencies]
-    return [_to_dependency_context(item, language) for item in selected if item.score > -4]
+    return [_to_dependency_context(item, language, str(repo_root)) for item in selected if item.score > -4]
 
 
-def _to_dependency_context(resolved: ResolvedDependency, language: str) -> DependencyContext:
-    summary = _summarize_dependency(language, resolved.source_code)
-    if _should_inline_dependency(resolved.source_code):
+def _to_dependency_context(
+    resolved: ResolvedDependency,
+    language: str,
+    repo_root: str,
+) -> DependencyContext:
+    """
+    Local deps (same-file or cross-file project modules):
+        send full raw source code — no summarization.
+    Third-party deps (installed packages, no local file):
+        send import line only.
+    """
+    if _is_third_party_dep(resolved.source_file, repo_root):
+        import_line = _build_import_line(
+            resolved.function_name,
+            resolved.source_file,
+            language,
+        )
         return DependencyContext(
             name=resolved.function_name,
             source_file=resolved.source_file,
             score=resolved.score,
-            mode="code",
-            content=resolved.source_code,
-            summary=summary,
+            mode="import_only",
+            content=import_line,
+            summary=import_line,
         )
+
+    # Local dependency — send full source, no summarization
     return DependencyContext(
         name=resolved.function_name,
         source_file=resolved.source_file,
         score=resolved.score,
-        mode="summary",
-        content=summary,
-        summary=summary,
+        mode="code",
+        content=resolved.source_code or "",
+        summary=resolved.source_code or "",
     )
+
+
+def _is_third_party_dep(source_file: str | None, repo_root: str) -> bool:
+    import os
+    if not source_file:
+        return True
+    if "site-packages" in source_file:
+        return True
+    full_path = os.path.join(repo_root, source_file)
+    return not os.path.exists(full_path)
+
+
+def _build_import_line(name: str, source_file: str | None, language: str) -> str:
+    if not source_file:
+        return f"# {name} (third-party)"
+    if language == "python":
+        module = (
+            source_file
+            .replace("\\", "/")
+            .removesuffix(".py")
+            .replace("/", ".")
+        )
+        return f"from {module} import {name}"
+    path = (
+        source_file
+        .replace("\\", "/")
+        .removesuffix(".tsx")
+        .removesuffix(".ts")
+        .removesuffix(".jsx")
+        .removesuffix(".js")
+    )
+    return f"import {{ {name} }} from '{path}'"
 
 
 def _resolve_dependency(
@@ -207,192 +254,6 @@ def _is_simple_wrapper(source_code: str) -> bool:
     joined = " ".join(meaningful_lines).lower()
     return joined.startswith("def ") or joined.startswith("function ") or joined.startswith("async")
 
-
-def _should_inline_dependency(source_code: str) -> bool:
-    return estimate_tokens(source_code) <= 180 and len(source_code.splitlines()) <= 25
-
-def _summarize_python(source_code: str) -> str:
-    _BUILTIN_NOISE = {
-        "len", "str", "int", "float", "bool", "list", "dict", "set",
-        "tuple", "range", "enumerate", "zip", "map", "filter", "sorted",
-        "round", "abs", "min", "max", "sum", "any", "all", "print",
-        "isinstance", "hasattr", "getattr", "setattr", "type",
-    }
-
-    class _Visitor(ast.NodeVisitor):
-        def __init__(self):
-            self.rules: list[str] = []
-            self._seen: set[str] = set()
-
-        def _add(self, rule: str) -> None:
-            if rule not in self._seen:
-                self._seen.add(rule)
-                self.rules.append(rule)
-
-        def visit_If(self, node):
-            self._add(f"condition: if {ast.unparse(node.test)}")
-            # capture elif/else existence without full detail
-            if node.orelse:
-                if isinstance(node.orelse[0], ast.If):
-                    self._add(f"condition: elif {ast.unparse(node.orelse[0].test)}")
-                else:
-                    self._add("condition: else branch exists")
-            self.generic_visit(node)
-
-        def visit_For(self, node):
-            target = ast.unparse(node.target)
-            iter_ = ast.unparse(node.iter)
-            self._add(f"loop: for {target} in {iter_}")
-            self.generic_visit(node)
-
-        def visit_While(self, node):
-            self._add(f"loop: while {ast.unparse(node.test)}")
-            self.generic_visit(node)
-
-        def visit_Try(self, node):
-            self._add("error handling: try/except block")
-            for handler in node.handlers:
-                if handler.type:
-                    self._add(f"catches: {ast.unparse(handler.type)}")
-            self.generic_visit(node)
-
-        def visit_Return(self, node):
-            if node.value:
-                self._add(f"returns: {ast.unparse(node.value)}")
-
-        def visit_Raise(self, node):
-            if node.exc:
-                self._add(f"raises: {ast.unparse(node.exc)}")
-
-        def visit_Assign(self, node):
-            # only capture assignments to module-level or self. attributes
-            # local variable churn adds noise
-            for target in node.targets:
-                t = ast.unparse(target)
-                if t.startswith("self.") or t.startswith("cls."):
-                    self._add(f"mutates: {t}")
-            self.generic_visit(node)
-
-        def visit_Call(self, node):
-            func = ast.unparse(node.func)
-            if func.split(".")[0] not in _BUILTIN_NOISE:
-                self._add(f"calls: {func}()")
-            self.generic_visit(node)
-
-    try:
-        tree = ast.parse(source_code)
-    except SyntaxError:
-        return f"- behavior: {source_code.splitlines()[0].strip()}"
-
-    visitor = _Visitor()
-    visitor.visit(tree)
-
-    rules = visitor.rules[:15]
-    if not rules:
-        return f"- behavior: {source_code.splitlines()[0].strip()}"
-    return "\n".join(f"- {r}" for r in rules)
-
-
-def _summarize_js(source_code: str) -> str:
-    _BUILTIN_NOISE = {
-        "console", "Math", "JSON", "Object", "Array", "String",
-        "Number", "Boolean", "Promise", "Error", "Date",
-        "parseInt", "parseFloat", "isNaN", "isFinite",
-    }
-
-    rules: list[str] = []
-    seen: set[str] = set()
-
-    def add(rule: str) -> None:
-        if rule not in seen:
-            seen.add(rule)
-            rules.append(rule)
-
-    for line in source_code.splitlines():
-        s = line.strip().rstrip(";")
-        if not s or s.startswith(("//", "/*", "*")):
-            continue
-
-        # if condition
-        m = re.match(r"if\s*\((.+?)\)\s*\{?$", s)
-        if m:
-            add(f"condition: if {m.group(1).strip()}")
-            continue
-
-        # else if
-        m = re.match(r"else\s+if\s*\((.+?)\)\s*\{?$", s)
-        if m:
-            add(f"condition: else if {m.group(1).strip()}")
-            continue
-
-        # else branch
-        if re.match(r"^else\s*\{?$", s):
-            add("condition: else branch exists")
-            continue
-
-        # for loop — classic and for...of / for...in
-        m = re.match(r"for\s*\((.+?)\)\s*\{?$", s)
-        if m:
-            add(f"loop: for ({m.group(1).strip()})")
-            continue
-
-        # while loop
-        m = re.match(r"while\s*\((.+?)\)\s*\{?$", s)
-        if m:
-            add(f"loop: while {m.group(1).strip()}")
-            continue
-
-        # try/catch/finally
-        if re.match(r"^try\s*\{?$", s):
-            add("error handling: try/catch block")
-            continue
-
-        m = re.match(r"catch\s*\((\w+)\)\s*\{?$", s)
-        if m:
-            add(f"catches: {m.group(1)}")
-            continue
-
-        if re.match(r"^finally\s*\{?$", s):
-            add("error handling: finally block")
-            continue
-
-        # throw
-        m = re.match(r"throw\s+new\s+(\w+)\s*\((.*?)?\)", s)
-        if m:
-            msg = m.group(2).strip().strip("'\"`") if m.group(2) else ""
-            add(f"raises: {m.group(1)}({msg})" if msg else f"raises: {m.group(1)}")
-            continue
-
-        # return
-        m = re.match(r"return\s+(.+?)$", s)
-        if m:
-            val = m.group(1).strip()
-            if val not in ("null", "undefined", "true", "false", "void 0"):
-                add(f"returns: {val[:60]}")
-            continue
-
-        # external calls — method chains and standalone
-        m = re.search(r"(?:await\s+)?(\w+(?:\.\w+)+)\s*\(", s)
-        if m:
-            func = m.group(1)
-            if func.split(".")[0] not in _BUILTIN_NOISE:
-                add(f"calls: {func}()")
-
-    if not rules:
-        for line in source_code.splitlines():
-            s = line.strip()
-            if s and not re.match(
-                r"^(export\s+)?(async\s+)?function|^const\s+\w+=|^//|^\*", s
-            ):
-                return f"- behavior: {s[:80]}"
-        return f"- behavior: {source_code.splitlines()[0].strip()}"
-
-    return "\n".join(f"- {r}" for r in rules[:15])
-
-def _summarize_dependency(language: str, source_code: str) -> str:
-    if language == "python":
-        return _summarize_python(source_code)
-    return _summarize_js(source_code)
 
 
 

@@ -26,10 +26,10 @@ class LLMInput:
     pr_rules: list[str]
     existing_tests: str
     import_hints: list[str]
+    method_source: str = ""
 
 
 def build_llm_input(target: GenerationTarget, generated_tests_dir: Path | str = Path("tests/ai_generated")) -> LLMInput:
-    dependency_entries = [_dependency_entry(dependency) for dependency in target.dependencies]
     project_rules, pr_rules = _fit_context_rules(target.project_rules, target.pr_rules)
     existing_tests = _fit_existing_tests(_build_existing_tests_reference(target))
 
@@ -38,13 +38,14 @@ def build_llm_input(target: GenerationTarget, generated_tests_dir: Path | str = 
         language=target.language,
         test_framework=test_framework_for_language(target.language),
         primary_code_block=target.function_change.source_code.strip(),
-        dependencies=[entry["active"] for entry in dependency_entries],
+        dependencies=[_dependency_entry(dep) for dep in target.dependencies],
         project_rules=project_rules,
         pr_rules=pr_rules,
         existing_tests=existing_tests,
         import_hints=_build_import_hints(target, Path(generated_tests_dir)),
+        method_source=target.function_change.source_code.strip(),
     )
-    return _fit_llm_input_to_budget(llm_input, dependency_entries)
+    return _fit_llm_input_to_budget(llm_input)
 
 
 def _detect_external_calls(source_code: str) -> list[str]:
@@ -260,11 +261,23 @@ def build_prompt(llm_input: LLMInput) -> str:
         "====================\n"
         "FUNCTION UNDER TEST\n"
         "====================\n"
-        f"{llm_input.primary_code_block}\n\n"
-        + _detect_ui_component(
-            llm_input.primary_code_block, llm_input.language
+        + (
+            f"The specific function/method to test is: "
+            f"{llm_input.function_name}\n"
+            f"Full class source is provided so you can correctly "
+            f"instantiate it in tests.\n\n"
+            if llm_input.method_source and
+               llm_input.method_source.strip() != llm_input.primary_code_block.strip()
+            else ""
         )
-        + _build_mock_hints_section(llm_input.primary_code_block)
+        + f"{llm_input.primary_code_block}\n\n"
+        + _detect_ui_component(
+            llm_input.method_source or llm_input.primary_code_block,
+            llm_input.language,
+        )
+        + _build_mock_hints_section(
+            llm_input.method_source or llm_input.primary_code_block
+        )
         +
         "====================\n"
         "IMPORT HINTS (MANDATORY — USE ONLY THESE)\n"
@@ -797,11 +810,11 @@ def _python_module_path(source_file: str) -> str:
     return ".".join(parts)
 
 
-def _dependency_entry(dependency: DependencyContext) -> dict[str, str]:
+def _dependency_entry(dependency: DependencyContext) -> str:
+    if dependency.mode == "import_only":
+        return f"- {dependency.name} (third-party)\n  {dependency.content}"
     location = f" ({dependency.source_file})" if dependency.source_file else ""
-    full = f"- {dependency.name}{location}\n{dependency.content.strip()}"
-    summary = f"- {dependency.name}{location}\n{dependency.summary.strip()}"
-    return {"active": full, "summary": summary}
+    return f"- {dependency.name}{location}\n{dependency.content.strip()}"
 
 
 def _fit_context_rules(project_rules: list[str], pr_rules: list[str]) -> tuple[list[str], list[str]]:
@@ -832,7 +845,7 @@ def _fit_existing_tests(existing_tests: str) -> str:
     return "\n".join(kept_lines).strip()
 
 
-def _fit_llm_input_to_budget(llm_input: LLMInput, dependency_entries: list[dict[str, str]]) -> LLMInput:
+def _fit_llm_input_to_budget(llm_input: LLMInput) -> LLMInput:
     fitted_input = llm_input
 
     while estimate_tokens(build_prompt(fitted_input)) > MAX_INPUT_TOKENS:
@@ -841,9 +854,9 @@ def _fit_llm_input_to_budget(llm_input: LLMInput, dependency_entries: list[dict[
             fitted_input = trimmed_input
             continue
 
-        summarized_input = _summarize_dependencies(fitted_input, dependency_entries)
-        if summarized_input != fitted_input:
-            fitted_input = summarized_input
+        trimmed_deps = _trim_largest_dependency(fitted_input)
+        if trimmed_deps != fitted_input:
+            fitted_input = trimmed_deps
             continue
 
         reduced_existing_tests = _trim_existing_tests(fitted_input)
@@ -867,14 +880,22 @@ def _trim_context(llm_input: LLMInput) -> LLMInput:
     return llm_input
 
 
-def _summarize_dependencies(llm_input: LLMInput, dependency_entries: list[dict[str, str]]) -> LLMInput:
-    active_dependencies = list(llm_input.dependencies)
-    for index, current_dependency in enumerate(active_dependencies):
-        summary_dependency = dependency_entries[index]["summary"]
-        if current_dependency != summary_dependency:
-            active_dependencies[index] = summary_dependency
-            return replace(llm_input, dependencies=active_dependencies)
-    return llm_input
+def _trim_largest_dependency(llm_input: LLMInput) -> LLMInput:
+    """
+    When over budget, remove the largest dependency first.
+    Local deps send full source which can be large — trim
+    the biggest one to bring the prompt under budget.
+    """
+    if not llm_input.dependencies:
+        return llm_input
+    # Find and remove the largest dep by token count
+    largest_idx = max(
+        range(len(llm_input.dependencies)),
+        key=lambda i: estimate_tokens(llm_input.dependencies[i]),
+    )
+    trimmed = list(llm_input.dependencies)
+    trimmed.pop(largest_idx)
+    return replace(llm_input, dependencies=trimmed)
 
 
 def _trim_existing_tests(llm_input: LLMInput) -> LLMInput:
