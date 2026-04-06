@@ -19,7 +19,24 @@ class StructuredContext:
                 "simple returns, configuration, routing, or no branching. "
                 "Focus only on functions with business logic, validation, "
                 "transformations, or multiple execution paths."
-
+                "SKIP these — do NOT generate tests for them:\n"
+                "- Data classes or model classes that only set attributes "
+                "in __init__ and return dicts in to_dict() with no "
+                "branching, no validation, no conditionals\n"
+                "- __repr__, __str__, __eq__, __hash__ methods\n"
+                "- __init__ methods that only assign self.x = x with "
+                "no validation, no conditionals, no external calls\n"
+                "- to_dict(), from_dict(), serialize(), deserialize() "
+                "methods that only construct and return a dict\n"
+                "- Enum classes and their members\n"
+                "- Constants, configuration dictionaries, type aliases\n"
+                "- Functions whose entire body is a single return statement "
+                "with no branching\n"
+                "- Property getters that only return self._x\n"
+                "ONLY generate tests for functions that have at least ONE "
+                "of these: if/else branch, try/except block, loop with "
+                "conditional, explicit raise/throw, call to external "
+                "service/database/API, or complex computation."
         )
 
         return [file_filter_rule, *base_rules]
