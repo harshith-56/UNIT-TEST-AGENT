@@ -241,6 +241,18 @@ def build_prompt(llm_input: LLMInput) -> str:
         "well-established version of it\n\n"
 
         "====================\n"
+        "IMPORT COMPLIANCE (READ BEFORE ANYTHING ELSE)\n"
+        "====================\n"
+        "The IMPORT HINTS section below contains the ONLY valid import paths.\n"
+        "You MUST use those exact paths. This is non-negotiable.\n"
+        "NEVER derive module paths from instance IDs, PR IDs, task IDs,\n"
+        "or any identifier that looks like 'repo__repo-12345'.\n"
+        "If you see 'django__django-17087' anywhere — that is a TASK ID,\n"
+        "NOT a module path. Never use it as an import.\n"
+        "The module path comes ONLY from the source file path shown in\n"
+        "IMPORT HINTS\n"
+
+        "====================\n"
         "ANTI-HALLUCINATION RULE (NON-NEGOTIABLE):"
         "====================\n"
         "If ther is some parts whose code you cant see and must use that"
@@ -257,14 +269,17 @@ def build_prompt(llm_input: LLMInput) -> str:
         "- NEVER assume a return value structure unless you see it"
         "explicitly constructed in the source."
 
-        "Before writing ANY assertion, you must be able to point to\n"
-        "the EXACT LINE in the source code above that proves it.\n"
-        "If you cannot, DO NOT write that assertion.\n\n"
 
         "NEVER assert that a function raises an exception unless you\n"
         "see an explicit raise or throw statement in the source.\n"
         "If __init__ has no raise statement, it does NOT raise TypeError\n"
         "on wrong types — Python allows it. Do not test for it.\n\n"
+
+
+        "Before writing ANY assertion, you must be able to point to\n"
+        "the EXACT LINE in the source code above that proves it.\n"
+        "If you cannot, DO NOT write that assertion.\n\n"
+
 
         "NEVER assert an exact string format unless you can see that\n"
         "exact format constructed in the source code.\n"
@@ -313,13 +328,15 @@ def build_prompt(llm_input: LLMInput) -> str:
         "Do not assume additional states, transitions, or attributes.\n"
         "If a concept is not explicitly present, do not include it in tests.\n"
 
-        "====================\n"
         "TEST TYPE (STRICT)\n"
         "====================\n"
         "- Generate ONLY UNIT tests\n"
         "- DO NOT use TestClient\n"
         "- DO NOT make HTTP calls\n"
         "- DO NOT create real DB engines\n\n"
+
+
+        
 
         "====================\n"
         "PROJECT CONTEXT\n"
@@ -376,7 +393,10 @@ def build_prompt(llm_input: LLMInput) -> str:
         "'export class', or 'export {': "
         "use named import → import { X } from './path'\n"
         "- NEVER guess the import style — always derive it from source\n"
-        "- NEVER use deprecated methods for writing unit tests eg: .toThrowError()-> .toThrow() since it was deprecated\n\n"
+        "- NEVER use deprecated methods for writing unit tests eg: .toThrowError()-> .toThrow() since it was deprecated\n"
+        "- NEVER use task IDs, instance IDs, or PR numbers as module names\n"
+        "- If you are unsure of the module path: look at IMPORT HINTS above\n"
+
 
         "====================\n"
         "DEPENDENCIES\n"

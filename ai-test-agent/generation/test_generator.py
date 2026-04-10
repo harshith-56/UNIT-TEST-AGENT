@@ -6,6 +6,7 @@ import time
 from agent.config import AgentConfig
 from context.repo_context import GenerationTarget
 from generation.test_models import GeneratedTest, GenerationFailure, GenerationResult
+from integration.test_writer import get_test_file_path
 from llm.llm_client import LLMClient
 from llm.prompt_builder import SkipGeneration, build_llm_input, build_prompt, build_retry_prompt
 from utils.logger import get_logger
@@ -18,9 +19,9 @@ LOGGER = get_logger(__name__)
 
 MAX_GENERATION_ATTEMPTS = 12
 SKIP_AFTER_ATTEMPTS = 3
-RETRY_DELAY_SECONDS = 3
-RATE_LIMIT_SLEEP_SECONDS = 3
-POST_SUCCESS_DELAY_SECONDS = 2
+RETRY_DELAY_SECONDS = 1
+RATE_LIMIT_SLEEP_SECONDS = 1
+POST_SUCCESS_DELAY_SECONDS = 1
 MIN_OUTPUT_CHARACTERS = 24
 
 
@@ -64,8 +65,14 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
 
     for target in targets:
         try:
-            llm_input = build_llm_input(target)
-            LOGGER.info(f"[DEBUG] import_hints for {target.test_id}: {llm_input.import_hints}")
+            specific_test_dir = get_test_file_path(
+                config.generated_tests_dir,
+                target.source_file,
+                target.test_id,
+                target.language,
+            ).parent
+            llm_input = build_llm_input(target, generated_tests_dir=specific_test_dir)
+            # LOGGER.info(f"[DEBUG] import_hints for {target.test_id}: {llm_input.import_hints}")
             base_prompt = build_prompt(llm_input)
         except SkipGeneration:
             continue
@@ -83,24 +90,24 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
                 retry_temperature = None if attempt_number == 1 else min(0.2 + (attempt_number * 0.05), 0.8)
                 response = client.generate(prompt, temperature=retry_temperature)
 
-                LOGGER.info(f"[RAW][{target.test_id}][Attempt {attempt_number}]:\n{response.content}")
+                # LOGGER.info(f"[RAW][{target.test_id}][Attempt {attempt_number}]:\n{response.content}")
 
             except Exception as e:
                 err = str(e).lower()
 
                 if any(x in err for x in RATE_LIMIT_PATTERNS):
-                    LOGGER.warning("Rate limit hit. Sleeping...")
+                    # LOGGER.warning("Rate limit hit. Sleeping...")
                     time.sleep(RATE_LIMIT_SLEEP_SECONDS)
                     continue
 
-                LOGGER.warning(f"[ERROR][{target.test_id}] {e}")
+                # LOGGER.warning(f"[ERROR][{target.test_id}] {e}")
                 time.sleep(RETRY_DELAY_SECONDS)
                 continue
 
             cleaned = _strip_code_fences(response.content)
 
-            LOGGER.debug(f"[CLEANED_FULL][{target.test_id}]:\n{cleaned}")
-            LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned}")
+            # LOGGER.debug(f"[CLEANED_FULL][{target.test_id}]:\n{cleaned}")
+            # LOGGER.info(f"[CLEANED][{target.test_id}]:\n{cleaned}")
 
             valid, reason = validate_content(
                 target.language,
@@ -110,22 +117,22 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
             if not valid:
                 if reason == "truncated":
                     last_lines = "\n".join(cleaned.splitlines()[-3:])
-                    LOGGER.warning(f"[TRUNCATED][{target.test_id}] Last 3 lines:\n{last_lines}")
-                LOGGER.warning(f"[INVALID][{target.test_id}] {reason} (attempt {attempt_number})")
+                    # LOGGER.warning(f"[TRUNCATED][{target.test_id}] Last 3 lines:\n{last_lines}")
+                # LOGGER.warning(f"[INVALID][{target.test_id}] {reason} (attempt {attempt_number})")
                 last_failure_reason = reason
                 if attempt_number >= SKIP_AFTER_ATTEMPTS:
-                    LOGGER.warning(
-                        f"[SKIP][{target.test_id}] Skipping after "
-                        f"{SKIP_AFTER_ATTEMPTS} failed attempts — "
-                        f"last failure: {reason}"
-                    )
+                    # LOGGER.warning(
+                    #     f"[SKIP][{target.test_id}] Skipping after "
+                    #     f"{SKIP_AFTER_ATTEMPTS} failed attempts — "
+                    #     f"last failure: {reason}"
+                    # )
                     last_failure_reason = f"skipped_after_{SKIP_AFTER_ATTEMPTS}_attempts"
                     break
                 time.sleep(RETRY_DELAY_SECONDS)
                 continue
 
             content = cleaned
-            LOGGER.info(f"[SUCCESS][{target.test_id}]")
+            # LOGGER.info(f"[SUCCESS][{target.test_id}]")
             time.sleep(POST_SUCCESS_DELAY_SECONDS)
             break
 
@@ -161,17 +168,18 @@ def generate_tests(targets: list[GenerationTarget], config: AgentConfig) -> Gene
         attempted = attempted_by_file.get(source_file, [])
         succeeded = succeeded_by_file.get(source_file, [])
         failed_names = [f for f in attempted if f not in succeeded]
-        LOGGER.info(
-            f"[COVERAGE][{source_file}] "
-            f"{len(succeeded)}/{len(attempted)} functions covered. "
-            f"Skipped/failed: {failed_names or 'none'}"
-        )
+        # LOGGER.info(
+        #     f"[COVERAGE][{source_file}] "
+        #     f"{len(succeeded)}/{len(attempted)} functions covered. "
+        #     f"Skipped/failed: {failed_names or 'none'}"
+        # )
         untested_names = [f for f in all_funcs if f not in attempted]
         if untested_names:
-            LOGGER.warning(
-                f"[COVERAGE][{source_file}] "
-                f"No tests generated for: {untested_names}"
-            )
+            # LOGGER.warning(
+            #     f"[COVERAGE][{source_file}] "
+            #     f"No tests generated for: {untested_names}"
+            # )
+            pass 
 
     return GenerationResult(generated_tests=generated_tests, failures=failures)
 

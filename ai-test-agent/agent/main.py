@@ -26,7 +26,7 @@ def main() -> int:
 
     changed_files = analyze_diff(config.repo_root, event_context.base_branch)
     if not changed_files:
-        LOGGER.info("No relevant changes detected — skipping generation")
+        # LOGGER.info("No relevant changes detected — skipping generation")
         return 0
 
     existing_tests = discover_existing_tests(config.repo_root)
@@ -39,14 +39,14 @@ def main() -> int:
     )
 
     if not generation_context.targets and not generation_context.maintenance_actions:
-        LOGGER.info("No generation targets — skipping")
+        # LOGGER.info("No generation targets — skipping")
         return 0
 
-    LOGGER.info(
-        "generation_targets_detected count=%s maintenance_actions=%s",
-        len(generation_context.targets),
-        len(generation_context.maintenance_actions),
-    )
+    # LOGGER.info(
+    #     "generation_targets_detected count=%s maintenance_actions=%s",
+    #     len(generation_context.targets),
+    #     len(generation_context.maintenance_actions),
+    # )
 
     # Generate tests for all targets
     generation_result = generate_tests(generation_context.targets, config)
@@ -57,12 +57,13 @@ def main() -> int:
     )
 
     if invalid_tests:
-        LOGGER.warning(
-            "invalid_tests_skipped count=%s — run agent again to retry",
-            len(invalid_tests),
-        )
+        # LOGGER.warning(
+        #     "invalid_tests_skipped count=%s — run agent again to retry",
+        #     len(invalid_tests),
+        # )
         for inv in invalid_tests:
-            LOGGER.warning("  skipped: %s", inv.test_id)
+            # LOGGER.warning("  skipped: %s", inv.test_id)
+            pass
 
     # Deduplicate
     final_tests = filter_duplicate_tests(valid_tests, generation_context)
@@ -75,17 +76,17 @@ def main() -> int:
             generation_context.maintenance_actions,
             config,
         )
-        LOGGER.info(
-            "agent_run_summary "
-            "targets=%s generated=%s invalid=%s written=%s maintenance=%s",
-            len(generation_context.targets),
-            len(final_tests),
-            len(invalid_tests),
-            len(write_result.written_paths),
-            len(generation_context.maintenance_actions),
-        )
+        # LOGGER.info(
+        #     "agent_run_summary "
+        #     "targets=%s generated=%s invalid=%s written=%s maintenance=%s",
+        #     len(generation_context.targets),
+        #     len(final_tests),
+        #     len(invalid_tests),
+        #     len(write_result.written_paths),
+        #     len(generation_context.maintenance_actions),
+        # )
     else:
-        LOGGER.info("No valid tests to write")
+        pass  # LOGGER.info("No valid tests to write")
 
     return 0
 

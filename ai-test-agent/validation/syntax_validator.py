@@ -49,19 +49,19 @@ def validate_content(language: str, content: str, source_file: str) -> tuple[boo
     # Check 1: completeness / truncation
     ok, reason = _check_completeness(content, language)
     if not ok:
-        LOGGER.warning(f"[validate_content] completeness fail: {reason}")
+        # LOGGER.warning(f"[validate_content] completeness fail: {reason}")
         return False, reason
 
     # Check 2: imports
     ok, reason = _check_imports(content, source_file, language)
     if not ok:
-        LOGGER.warning(f"[validate_content] import fail: {reason}")
+        # LOGGER.warning(f"[validate_content] import fail: {reason}")
         return False, reason
 
     # Check 3: placeholder patterns
     for pattern in BANNED_OUTPUT_PATTERNS:
         if pattern.search(content):
-            LOGGER.warning(f"[validate_content] banned pattern matched")
+            # LOGGER.warning(f"[validate_content] banned pattern matched")
             return False, "banned_pattern"
 
     # Check 4: universally banned JS/TS patterns
@@ -112,7 +112,7 @@ def _is_valid_generated_test(generated_test: GeneratedTest) -> bool:
         generated_test.source_file,
     )
     if not ok:
-        LOGGER.warning(f"[INVALID][{generated_test.test_id}] {reason}")
+        # LOGGER.warning(f"[INVALID][{generated_test.test_id}] {reason}")
         return False
 
     if not generated_test.content.strip():
